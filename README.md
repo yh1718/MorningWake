@@ -51,9 +51,15 @@ MorningWake/
 └── LEGACY_MAC_AUTOMATION.md                  # 历史初代自动化脚本完整归档文档
 ```
 
+## 📥 下载安装 (Mac 专有 DMG 格式)
+
+直接前往 [GitHub Releases](https://github.com/yh1718/MorningWake/releases/latest) 下载预编译安装包：
+- **`MorningWake.dmg`**：推荐下载。双击打开后，将 `MorningWake.app` 拖拽到 `Applications`（应用程序）即可完成安装。
+- **`MorningWake.zip`**：备用压缩包，解压后双击即可运行。
+
 ---
 
-## 🛠️ 构建与运行
+## 🛠️ 源码构建与运行 (开发者)
 
 ### 环境要求
 - 操作系统：macOS 13.0 (Ventura) 及以上
