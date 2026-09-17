@@ -1,0 +1,18 @@
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+Icon
+
+# Swift Package Manager & Build artifacts
+.build/
+build/
+DerivedData/
+Packages/
+*.xcodeproj
+*.xcworkspace
+xcuserdata/
+
+# Logs & temp files
+*.log
+.system_generated/
