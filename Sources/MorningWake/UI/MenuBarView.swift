@@ -63,12 +63,18 @@ public struct MenuBarView: View {
             
             // 4. 核心主卡片：优化结构、防截断、大显示面积、就地修改交互
             VStack(spacing: 10) {
-                // 上排：下次唤醒情境与状态标签 + 倒计时指示
+                // 上排：下次唤醒的明确日期（今天/明天/周几）+ 标签 + 倒计时指示
                 HStack(alignment: .center) {
-                    HStack(spacing: 6) {
+                    HStack(spacing: 5) {
                         Text("下次唤醒")
                             .font(.system(size: 11, weight: .medium))
                             .foregroundColor(.secondary)
+                        
+                        if appState.isAlarmEnabled {
+                            Text("· \(appState.nextAlarmDayTitle)")
+                                .font(.system(size: 11, weight: .bold))
+                                .foregroundColor(.primary)
+                        }
                         
                         if !appState.nextAlarmBadge.isEmpty && appState.isAlarmEnabled {
                             Text(appState.nextAlarmBadge)
@@ -132,6 +138,24 @@ public struct MenuBarView: View {
                     .help("就地展开/收起时间修改")
                 }
                 
+                // 智能时间接力提示（例如今天时刻已过，明确提示自动接力明日工作日）
+                if let notice = appState.scheduleNotice, !notice.isEmpty && appState.isAlarmEnabled {
+                    HStack(spacing: 4) {
+                        Image(systemName: "arrow.triangle.turn.up.right.diamond.fill")
+                            .font(.system(size: 9))
+                            .foregroundColor(.orange)
+                        Text(notice)
+                            .font(.system(size: 10))
+                            .foregroundColor(.secondary)
+                            .lineLimit(1)
+                        Spacer()
+                    }
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 3)
+                    .background(Color.orange.opacity(0.08))
+                    .cornerRadius(6)
+                }
+                
                 // 下排：作息摘要与当前音源
                 Divider()
                     .opacity(0.6)
@@ -150,7 +174,7 @@ public struct MenuBarView: View {
                         .lineLimit(1)
                 }
                 
-                // 展开区：就地快速修改面板（平滑展开动效，无 Popover 漂移/遮挡风险）
+                // 展开区：就地快速修改面板（采用紧凑微调器，彻底杜绝下拉大菜单遮挡重叠）
                 if isEditingTime {
                     inlineEditSection
                         .transition(.opacity.combined(with: .move(edge: .top)))
@@ -237,7 +261,7 @@ public struct MenuBarView: View {
                         .font(.system(size: 11, weight: .medium))
                         .foregroundColor(.blue)
                     Spacer()
-                    inlinePicker(hour: $appState.workdayHour, minute: $appState.workdayMinute)
+                    TimeStepperView(hour: $appState.workdayHour, minute: $appState.workdayMinute, accentColor: .blue)
                 }
                 
                 // 周末与慢晨作息调节与开关
@@ -252,7 +276,7 @@ public struct MenuBarView: View {
                     }
                     Spacer()
                     if appState.weekendEnabled {
-                        inlinePicker(hour: $appState.weekendHour, minute: $appState.weekendMinute)
+                        TimeStepperView(hour: $appState.weekendHour, minute: $appState.weekendMinute, accentColor: .orange)
                     } else {
                         Text("静音休息")
                             .font(.system(size: 10))
@@ -268,7 +292,7 @@ public struct MenuBarView: View {
                     Text("响铃时间")
                         .font(.system(size: 11, weight: .medium))
                     Spacer()
-                    inlinePicker(hour: $appState.alarmHour, minute: $appState.alarmMinute)
+                    TimeStepperView(hour: $appState.alarmHour, minute: $appState.alarmMinute, accentColor: .blue)
                 }
             }
             
@@ -298,30 +322,6 @@ public struct MenuBarView: View {
             }
         }
         .padding(.top, 4)
-    }
-    
-    private func inlinePicker(hour: Binding<Int>, minute: Binding<Int>) -> some View {
-        HStack(spacing: 4) {
-            Picker("", selection: hour) {
-                ForEach(0..<24) { h in
-                    Text(String(format: "%02d", h)).tag(h)
-                }
-            }
-            .labelsHidden()
-            .frame(width: 58)
-            
-            Text(":")
-                .font(.system(size: 12, weight: .bold))
-                .foregroundColor(.secondary)
-            
-            Picker("", selection: minute) {
-                ForEach(0..<60) { m in
-                    Text(String(format: "%02d", m)).tag(m)
-                }
-            }
-            .labelsHidden()
-            .frame(width: 58)
-        }
     }
     
     private var ringingControlCard: some View {

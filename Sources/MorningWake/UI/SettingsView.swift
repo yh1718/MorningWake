@@ -227,24 +227,7 @@ public struct SettingsView: View {
                                                 .foregroundColor(.secondary)
                                         }
                                         Spacer()
-                                        HStack(spacing: 4) {
-                                            Picker("", selection: $appState.workdayHour) {
-                                                ForEach(0..<24) { h in
-                                                    Text(String(format: "%02d", h)).tag(h)
-                                                }
-                                            }
-                                            .frame(width: 65)
-                                            
-                                            Text(":")
-                                                .fontWeight(.bold)
-                                            
-                                            Picker("", selection: $appState.workdayMinute) {
-                                                ForEach(0..<60) { m in
-                                                    Text(String(format: "%02d", m)).tag(m)
-                                                }
-                                            }
-                                            .frame(width: 65)
-                                        }
+                                        TimeStepperView(hour: $appState.workdayHour, minute: $appState.workdayMinute, accentColor: .blue)
                                     }
                                     
                                     Divider()
@@ -279,24 +262,7 @@ public struct SettingsView: View {
                                                     .font(.system(size: 11))
                                                     .foregroundColor(.secondary)
                                                 Spacer()
-                                                HStack(spacing: 4) {
-                                                    Picker("", selection: $appState.weekendHour) {
-                                                        ForEach(0..<24) { h in
-                                                            Text(String(format: "%02d", h)).tag(h)
-                                                        }
-                                                    }
-                                                    .frame(width: 65)
-                                                    
-                                                    Text(":")
-                                                        .fontWeight(.bold)
-                                                    
-                                                    Picker("", selection: $appState.weekendMinute) {
-                                                        ForEach(0..<60) { m in
-                                                            Text(String(format: "%02d", m)).tag(m)
-                                                        }
-                                                    }
-                                                    .frame(width: 65)
-                                                }
+                                                TimeStepperView(hour: $appState.weekendHour, minute: $appState.weekendMinute, accentColor: .orange)
                                             }
                                             .padding(.leading, 8)
                                         }
@@ -327,7 +293,7 @@ public struct SettingsView: View {
                                     HStack {
                                         Image(systemName: "calendar.badge.clock")
                                             .foregroundColor(.orange)
-                                        Text("今日日历状态: \(todayAttr.badgeText) · 下次排期: \(appState.nextAlarmDate != nil ? String(format: "%02d:%02d", appState.nextAlarmTargetHour, appState.nextAlarmTargetMinute) : "无") (\(appState.nextAlarmBadge))")
+                                        Text("今日日历状态: \(todayAttr.badgeText) · 下次排期: \(appState.nextAlarmDayTitle) \(appState.nextAlarmDate != nil ? String(format: "%02d:%02d", appState.nextAlarmTargetHour, appState.nextAlarmTargetMinute) : "无") (\(appState.nextAlarmBadge))")
                                             .font(.system(size: 10))
                                             .foregroundColor(.secondary)
                                     }
@@ -338,24 +304,7 @@ public struct SettingsView: View {
                                 HStack {
                                     Text("响铃时间")
                                     Spacer()
-                                    HStack(spacing: 4) {
-                                        Picker("", selection: $appState.alarmHour) {
-                                            ForEach(0..<24) { h in
-                                                Text(String(format: "%02d", h)).tag(h)
-                                            }
-                                        }
-                                        .frame(width: 65)
-                                        
-                                        Text(":")
-                                            .fontWeight(.bold)
-                                        
-                                        Picker("", selection: $appState.alarmMinute) {
-                                            ForEach(0..<60) { m in
-                                                Text(String(format: "%02d", m)).tag(m)
-                                            }
-                                        }
-                                        .frame(width: 65)
-                                    }
+                                    TimeStepperView(hour: $appState.alarmHour, minute: $appState.alarmMinute, accentColor: .blue)
                                 }
                                 
                                 // 自定义星期多选器

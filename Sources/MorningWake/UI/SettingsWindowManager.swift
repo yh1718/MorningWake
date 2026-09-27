@@ -26,7 +26,18 @@ public final class SettingsWindowManager: NSObject, NSWindowDelegate {
             backing: .buffered,
             defer: false
         )
-        newWindow.center()
+        
+        // 智能定位：避开右上角菜单栏浮窗 (预留 380px 浮窗空间)，防止窗口与菜单栏浮窗相互重叠压盖
+        if let screen = NSScreen.main {
+            let vf = screen.visibleFrame
+            let freeWidth = vf.width - 480 - 380
+            let xPos: CGFloat = freeWidth > 0 ? (vf.minX + freeWidth * 0.45) : (vf.minX + 30)
+            let yPos: CGFloat = vf.minY + max(20, (vf.height - 640) / 2)
+            newWindow.setFrameOrigin(NSPoint(x: xPos, y: yPos))
+        } else {
+            newWindow.center()
+        }
+        
         newWindow.title = "MorningWake 偏好设置"
         newWindow.contentViewController = hostingController
         newWindow.isReleasedWhenClosed = false

@@ -149,6 +149,8 @@ public final class AppState: ObservableObject {
     @Published public var isManualVolumeOverridden: Bool = false
     @Published public var nextAlarmDate: Date?
     @Published public var nextAlarmBadge: String = "工作日"
+    @Published public var nextAlarmDayTitle: String = "明天"
+    @Published public var scheduleNotice: String? = nil
     @Published public var nextAlarmTargetHour: Int = 7
     @Published public var nextAlarmTargetMinute: Int = 30
     @Published public var todayScheduleInfo: String = ""
@@ -332,6 +334,8 @@ public final class AppState: ObservableObject {
             self.nextAlarmDate = nil
             self.countdownString = "近期无响铃安排"
             self.nextAlarmBadge = "无排期"
+            self.nextAlarmDayTitle = "无排期"
+            self.scheduleNotice = nil
             PowerManager.shared.cancelCurrentWake()
             return
         }
@@ -341,6 +345,34 @@ public final class AppState: ObservableObject {
         self.nextAlarmTargetHour = targetHour
         self.nextAlarmTargetMinute = targetMinute
         self.isSnoozing = false
+        
+        // 智能时间归属计算：清晰告知用户究竟是「今天」还是「明天」还是「后天」
+        let isToday = calendar.isDateInToday(candidateDate)
+        let isTomorrow = calendar.isDateInTomorrow(candidateDate)
+        let weekdayNames = ["", "周日", "周一", "周二", "周三", "周四", "周五", "周六"]
+        let w = calendar.component(.weekday, from: candidateDate)
+        let weekdayStr = (w >= 1 && w <= 7) ? weekdayNames[w] : ""
+        
+        if isToday {
+            self.nextAlarmDayTitle = "今天 (\(weekdayStr))"
+            self.scheduleNotice = nil
+        } else if isTomorrow {
+            self.nextAlarmDayTitle = "明天 (\(weekdayStr))"
+            let todayAttr = HolidayManager.shared.getDayAttribute(for: now)
+            if isSkippedToday {
+                self.scheduleNotice = "今日闹钟已手动跳过 · 自动接力明日排期"
+            } else if todayAttr.isStatutoryHoliday {
+                self.scheduleNotice = "今日（\(todayAttr.badgeText)）时刻已过 · 自动接力明日排期"
+            } else {
+                self.scheduleNotice = "今日响铃时刻已过 · 自动顺延至明日"
+            }
+        } else {
+            let comp = calendar.dateComponents([.month, .day], from: candidateDate)
+            let dateStr = "\(comp.month ?? 0)月\(comp.day ?? 0)日"
+            self.nextAlarmDayTitle = "\(dateStr) (\(weekdayStr))"
+            self.scheduleNotice = "近期非连续排期 · 已就绪下次唤醒"
+        }
+        
         PowerManager.shared.scheduleWake(at: candidateDate)
         updateCountdown()
     }
