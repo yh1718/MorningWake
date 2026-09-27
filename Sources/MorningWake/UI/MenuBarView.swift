@@ -35,7 +35,7 @@ public struct MenuBarView: View {
                                 .cornerRadius(4)
                         }
                         
-                        Text(appState.isAlarmEnabled ? (appState.isSnoozing ? "小睡进行中" : (appState.isSkippedToday ? "今日已跳过" : "Mac mini 唤醒已就绪")) : "已暂停")
+                        Text(appState.isAlarmEnabled ? (appState.isSnoozing ? "小睡进行中" : (appState.isSkippedToday ? "今日已跳过" : (appState.todayScheduleInfo.isEmpty ? "Mac mini 唤醒已就绪" : "今天 · \(appState.todayScheduleInfo)"))) : "已暂停")
                             .font(.system(size: 11))
                             .foregroundColor(appState.isSnoozing ? .purple : (appState.isSkippedToday ? .orange : .secondary))
                     }
@@ -147,8 +147,20 @@ public struct MenuBarView: View {
             // 核心卡片：下次唤醒时间与倒计时
             VStack(spacing: 6) {
                 HStack(alignment: .firstTextBaseline) {
-                    Text(String(format: "%02d:%02d", appState.alarmHour, appState.alarmMinute))
-                        .font(.system(size: 34, weight: .semibold, design: .rounded))
+                    HStack(spacing: 6) {
+                        Text(appState.nextAlarmDate != nil ? String(format: "%02d:%02d", appState.nextAlarmTargetHour, appState.nextAlarmTargetMinute) : "--:--")
+                            .font(.system(size: 34, weight: .semibold, design: .rounded))
+                        
+                        if !appState.nextAlarmBadge.isEmpty && appState.isAlarmEnabled {
+                            Text(appState.nextAlarmBadge)
+                                .font(.system(size: 10, weight: .semibold))
+                                .foregroundColor(.orange)
+                                .padding(.horizontal, 5)
+                                .padding(.vertical, 2)
+                                .background(Color.orange.opacity(0.15))
+                                .cornerRadius(5)
+                        }
+                    }
                     
                     Spacer()
                     
@@ -171,20 +183,14 @@ public struct MenuBarView: View {
                     Label(appState.repeatScheduleSummary, systemImage: "repeat")
                         .font(.system(size: 10))
                         .foregroundColor(.secondary)
+                        .lineLimit(1)
+                        .truncationMode(.tail)
                     
                     Text("•")
                         .font(.system(size: 9))
                         .foregroundColor(.secondary)
                     
                     Label(appState.playerTarget == .localFile ? "本地音乐" : (appState.playerTarget == .youtubeMusic ? "YT Music" : (appState.playerTarget == .appleMusic ? "Apple Music" : "自然和弦")), systemImage: "music.note")
-                        .font(.system(size: 10))
-                        .foregroundColor(.secondary)
-                    
-                    Text("•")
-                        .font(.system(size: 9))
-                        .foregroundColor(.secondary)
-                    
-                    Label("Mac mini 扬声器", systemImage: "hifispeaker.fill")
                         .font(.system(size: 10))
                         .foregroundColor(.secondary)
                     

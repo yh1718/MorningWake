@@ -189,32 +189,7 @@ public struct SettingsView: View {
                     GroupBox(label: Label("定时与日程", systemImage: "alarm.fill")) {
                         VStack(spacing: 12) {
                             HStack {
-                                Text("响铃时间")
-                                Spacer()
-                                HStack(spacing: 4) {
-                                    Picker("", selection: $appState.alarmHour) {
-                                        ForEach(0..<24) { h in
-                                            Text(String(format: "%02d", h)).tag(h)
-                                        }
-                                    }
-                                    .frame(width: 65)
-                                    
-                                    Text(":")
-                                        .fontWeight(.bold)
-                                    
-                                    Picker("", selection: $appState.alarmMinute) {
-                                        ForEach(0..<60) { m in
-                                            Text(String(format: "%02d", m)).tag(m)
-                                        }
-                                    }
-                                    .frame(width: 65)
-                                }
-                            }
-                            
-                            Divider()
-                            
-                            HStack {
-                                Text("重复频率")
+                                Text("作息方案")
                                 Spacer()
                                 Picker("", selection: Binding(
                                     get: { appState.repeatSchedule },
@@ -224,39 +199,194 @@ public struct SettingsView: View {
                                         Text(item.rawValue).tag(item)
                                     }
                                 }
-                                .frame(width: 170)
+                                .frame(width: 240)
                             }
                             
-                            // 自定义星期多选器
-                            if appState.repeatSchedule == .custom {
-                                VStack(alignment: .leading, spacing: 6) {
-                                    Text("自定义响铃星期:")
-                                        .font(.system(size: 11))
-                                        .foregroundColor(.secondary)
-                                    
-                                    HStack(spacing: 4) {
-                                        // 星期定义：2:一, 3:二, 4:三, 5:四, 6:五, 7:六, 1:日
-                                        let weekDays: [(Int, String)] = [
-                                            (2, "一"), (3, "二"), (4, "三"), (5, "四"), (6, "五"), (7, "六"), (1, "日")
-                                        ]
-                                        ForEach(weekDays, id: \.0) { day, name in
-                                            let isSelected = appState.customRepeatDays.contains(day)
-                                            Button(action: {
-                                                toggleRepeatDay(day)
-                                            }) {
-                                                Text(name)
-                                                    .font(.system(size: 11, weight: isSelected ? .bold : .regular))
-                                                    .frame(maxWidth: .infinity)
-                                                    .padding(.vertical, 4)
-                                                    .background(isSelected ? Color.orange : Color(NSColor.controlBackgroundColor))
-                                                    .foregroundColor(isSelected ? .white : .primary)
-                                                    .cornerRadius(6)
+                            Divider()
+                            
+                            // 针对智能作息方案的双轨与节假日配置
+                            if appState.repeatSchedule == .smartWorkday {
+                                VStack(alignment: .leading, spacing: 10) {
+                                    // 1. 工作日作息
+                                    HStack {
+                                        VStack(alignment: .leading, spacing: 2) {
+                                            HStack(spacing: 4) {
+                                                Text("工作日唤醒时刻")
+                                                    .fontWeight(.medium)
+                                                Text("💼 工作日")
+                                                    .font(.system(size: 9, weight: .bold))
+                                                    .foregroundColor(.blue)
+                                                    .padding(.horizontal, 4)
+                                                    .padding(.vertical, 1)
+                                                    .background(Color.blue.opacity(0.12))
+                                                    .cornerRadius(3)
                                             }
-                                            .buttonStyle(.plain)
+                                            Text("周一至周五，以及调休补班的周末")
+                                                .font(.system(size: 10))
+                                                .foregroundColor(.secondary)
+                                        }
+                                        Spacer()
+                                        HStack(spacing: 4) {
+                                            Picker("", selection: $appState.workdayHour) {
+                                                ForEach(0..<24) { h in
+                                                    Text(String(format: "%02d", h)).tag(h)
+                                                }
+                                            }
+                                            .frame(width: 65)
+                                            
+                                            Text(":")
+                                                .fontWeight(.bold)
+                                            
+                                            Picker("", selection: $appState.workdayMinute) {
+                                                ForEach(0..<60) { m in
+                                                    Text(String(format: "%02d", m)).tag(m)
+                                                }
+                                            }
+                                            .frame(width: 65)
                                         }
                                     }
+                                    
+                                    Divider()
+                                    
+                                    // 2. 周末与假期作息
+                                    VStack(alignment: .leading, spacing: 8) {
+                                        HStack {
+                                            VStack(alignment: .leading, spacing: 2) {
+                                                HStack(spacing: 4) {
+                                                    Text("周末与节假日作息")
+                                                        .fontWeight(.medium)
+                                                    Text("🏖️ 慢晨")
+                                                        .font(.system(size: 9, weight: .bold))
+                                                        .foregroundColor(.orange)
+                                                        .padding(.horizontal, 4)
+                                                        .padding(.vertical, 1)
+                                                        .background(Color.orange.opacity(0.12))
+                                                        .cornerRadius(3)
+                                                }
+                                                Text(appState.weekendEnabled ? "周六日及法定假期推迟唤醒，享受慢晨" : "周末与法定假期彻底静音，不打扰休息")
+                                                    .font(.system(size: 10))
+                                                    .foregroundColor(.secondary)
+                                            }
+                                            Spacer()
+                                            Toggle("", isOn: $appState.weekendEnabled)
+                                                .toggleStyle(.switch)
+                                        }
+                                        
+                                        if appState.weekendEnabled {
+                                            HStack {
+                                                Text("慢晨唤醒时刻")
+                                                    .font(.system(size: 11))
+                                                    .foregroundColor(.secondary)
+                                                Spacer()
+                                                HStack(spacing: 4) {
+                                                    Picker("", selection: $appState.weekendHour) {
+                                                        ForEach(0..<24) { h in
+                                                            Text(String(format: "%02d", h)).tag(h)
+                                                        }
+                                                    }
+                                                    .frame(width: 65)
+                                                    
+                                                    Text(":")
+                                                        .fontWeight(.bold)
+                                                    
+                                                    Picker("", selection: $appState.weekendMinute) {
+                                                        ForEach(0..<60) { m in
+                                                            Text(String(format: "%02d", m)).tag(m)
+                                                        }
+                                                    }
+                                                    .frame(width: 65)
+                                                }
+                                            }
+                                            .padding(.leading, 8)
+                                        }
+                                    }
+                                    
+                                    Divider()
+                                    
+                                    // 3. 中国法定节假日智能调优
+                                    VStack(alignment: .leading, spacing: 6) {
+                                        Text("中国法定节假日与调休智能适配:")
+                                            .font(.system(size: 11, weight: .semibold))
+                                            .foregroundColor(.secondary)
+                                        
+                                        Toggle("法定节假日自动休假 (按慢晨作息或静音)", isOn: $appState.smartHolidayEnabled)
+                                            .font(.system(size: 11))
+                                            .help("中秋、国庆、春节等法定假日，自动识别并不按工作日响铃")
+                                        
+                                        Toggle("调休上班日自动补响 (按工作日时刻唤醒)", isOn: $appState.smartWorkdayEnabled)
+                                            .font(.system(size: 11))
+                                            .help("因节假日调休需要上班的周六日，自动准时唤醒")
+                                    }
+                                    .padding(8)
+                                    .background(Color(NSColor.controlBackgroundColor))
+                                    .cornerRadius(6)
+                                    
+                                    // 4. 今日状态小提示卡片
+                                    let todayAttr = HolidayManager.shared.getDayAttribute(for: Date())
+                                    HStack {
+                                        Image(systemName: "calendar.badge.clock")
+                                            .foregroundColor(.orange)
+                                        Text("今日日历状态: \(todayAttr.badgeText) · 下次排期: \(appState.nextAlarmDate != nil ? String(format: "%02d:%02d", appState.nextAlarmTargetHour, appState.nextAlarmTargetMinute) : "无") (\(appState.nextAlarmBadge))")
+                                            .font(.system(size: 10))
+                                            .foregroundColor(.secondary)
+                                    }
+                                    .padding(.horizontal, 4)
                                 }
-                                .padding(.top, 4)
+                            } else {
+                                // 传统固定响铃时间
+                                HStack {
+                                    Text("响铃时间")
+                                    Spacer()
+                                    HStack(spacing: 4) {
+                                        Picker("", selection: $appState.alarmHour) {
+                                            ForEach(0..<24) { h in
+                                                Text(String(format: "%02d", h)).tag(h)
+                                            }
+                                        }
+                                        .frame(width: 65)
+                                        
+                                        Text(":")
+                                            .fontWeight(.bold)
+                                        
+                                        Picker("", selection: $appState.alarmMinute) {
+                                            ForEach(0..<60) { m in
+                                                Text(String(format: "%02d", m)).tag(m)
+                                            }
+                                        }
+                                        .frame(width: 65)
+                                    }
+                                }
+                                
+                                // 自定义星期多选器
+                                if appState.repeatSchedule == .custom {
+                                    VStack(alignment: .leading, spacing: 6) {
+                                        Text("自定义响铃星期:")
+                                            .font(.system(size: 11))
+                                            .foregroundColor(.secondary)
+                                        
+                                        HStack(spacing: 4) {
+                                            let weekDays: [(Int, String)] = [
+                                                (2, "一"), (3, "二"), (4, "三"), (5, "四"), (6, "五"), (7, "六"), (1, "日")
+                                            ]
+                                            ForEach(weekDays, id: \.0) { day, name in
+                                                let isSelected = appState.customRepeatDays.contains(day)
+                                                Button(action: {
+                                                    toggleRepeatDay(day)
+                                                }) {
+                                                    Text(name)
+                                                        .font(.system(size: 11, weight: isSelected ? .bold : .regular))
+                                                        .frame(maxWidth: .infinity)
+                                                        .padding(.vertical, 4)
+                                                        .background(isSelected ? Color.orange : Color(NSColor.controlBackgroundColor))
+                                                        .foregroundColor(isSelected ? .white : .primary)
+                                                        .cornerRadius(6)
+                                                }
+                                                .buttonStyle(.plain)
+                                            }
+                                        }
+                                    }
+                                    .padding(.top, 4)
+                                }
                             }
                             
                             Divider()

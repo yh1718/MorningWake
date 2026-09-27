@@ -6,6 +6,7 @@ import ServiceManagement
 import CoreAudio
 
 public enum RepeatSchedule: String, CaseIterable, Identifiable {
+    case smartWorkday = "智能作息 (工作日/周末双轨 + 节假日调休)"
     case everyday = "每天"
     case weekdays = "仅工作日 (周一至周五)"
     case weekends = "仅周末"
@@ -23,20 +24,47 @@ public final class AppState: ObservableObject {
         didSet { reschedule() }
     }
     
-    @AppStorage("alarmHour") public var alarmHour: Int = 7 {
+    // 工作日作息时刻 (默认 07:30)
+    @AppStorage("workdayHour") public var workdayHour: Int = 7 {
+        didSet { reschedule() }
+    }
+    @AppStorage("workdayMinute") public var workdayMinute: Int = 30 {
         didSet { reschedule() }
     }
     
+    // 周末与假期作息时刻 (默认开启 09:30 推迟慢唤，可独立关闭)
+    @AppStorage("weekendEnabled") public var weekendEnabled: Bool = true {
+        didSet { reschedule() }
+    }
+    @AppStorage("weekendHour") public var weekendHour: Int = 9 {
+        didSet { reschedule() }
+    }
+    @AppStorage("weekendMinute") public var weekendMinute: Int = 30 {
+        didSet { reschedule() }
+    }
+    
+    // 智能节假日与调休规则
+    @AppStorage("smartHolidayEnabled") public var smartHolidayEnabled: Bool = true {
+        didSet { reschedule() }
+    }
+    @AppStorage("smartWorkdayEnabled") public var smartWorkdayEnabled: Bool = true {
+        didSet { reschedule() }
+    }
+    
+    // 旧版兼容字段
+    @AppStorage("alarmHour") public var alarmHour: Int = 7 {
+        didSet { reschedule() }
+    }
     @AppStorage("alarmMinute") public var alarmMinute: Int = 35 {
         didSet { reschedule() }
     }
     
-    @AppStorage("repeatScheduleRaw") private var repeatScheduleRaw: String = RepeatSchedule.everyday.rawValue {
+    @AppStorage("repeatScheduleRaw") private var repeatScheduleRaw: String = RepeatSchedule.smartWorkday.rawValue {
         didSet { reschedule() }
     }
     
     public var repeatSchedule: RepeatSchedule {
-        get { RepeatSchedule(rawValue: repeatScheduleRaw) ?? .everyday }
+        get { RepeatSchedule(rawValue: repeatScheduleRaw) ?? .smartWorkday }
         set { repeatScheduleRaw = newValue.rawValue }
     }
     
@@ -58,8 +86,11 @@ public final class AppState: ObservableObject {
     
     public var repeatScheduleSummary: String {
         switch repeatSchedule {
+        case .smartWorkday:
+            let weekendText = weekendEnabled ? String(format: "%02d:%02d", weekendHour, weekendMinute) : "关闭"
+            return "智能作息 (工作日 \(String(format: "%02d:%02d", workdayHour, workdayMinute)) · 周末 \(weekendText))"
         case .everyday:
-            return "每天"
+            return "每天 (\(String(format: "%02d:%02d", alarmHour, alarmMinute)))"
         case .weekdays:
             return "仅工作日 (周一至五)"
         case .weekends:
@@ -111,6 +142,10 @@ public final class AppState: ObservableObject {
     @Published public var isSnoozing: Bool = false
     @Published public var isManualVolumeOverridden: Bool = false
     @Published public var nextAlarmDate: Date?
+    @Published public var nextAlarmBadge: String = "工作日"
+    @Published public var nextAlarmTargetHour: Int = 7
+    @Published public var nextAlarmTargetMinute: Int = 30
+    @Published public var todayScheduleInfo: String = ""
     @Published public var countdownString: String = "计算中..."
     @Published public var currentVolumePercent: Int = 0
     @Published public var launchAtLogin: Bool = false
@@ -129,6 +164,13 @@ public final class AppState: ObservableObject {
     private var originalVolumeBeforeTest: Float = 0.5
     
     private init() {
+        if !UserDefaults.standard.bool(forKey: "hasMigratedSmartWorkdayV11") {
+            if UserDefaults.standard.object(forKey: "alarmHour") != nil {
+                self.workdayHour = self.alarmHour
+                self.workdayMinute = self.alarmMinute
+            }
+            UserDefaults.standard.set(true, forKey: "hasMigratedSmartWorkdayV11")
+        }
         setupTimers()
         updateLaunchAtLoginStatus()
         reschedule()
@@ -169,6 +211,7 @@ public final class AppState: ObservableObject {
         guard isAlarmEnabled else {
             nextAlarmDate = nil
             countdownString = "已暂停"
+            nextAlarmBadge = "已暂停"
             isSnoozing = false
             PowerManager.shared.cancelCurrentWake()
             return
@@ -182,49 +225,118 @@ public final class AppState: ObservableObject {
         
         let now = Date()
         let calendar = Calendar.current
-        var targetComponents = calendar.dateComponents([.year, .month, .day], from: now)
-        targetComponents.hour = alarmHour
-        targetComponents.minute = alarmMinute
-        targetComponents.second = 0
         
-        guard var candidateDate = calendar.date(from: targetComponents) else { return }
+        var foundDate: Date? = nil
+        var foundBadge: String = ""
+        var targetHour = workdayHour
+        var targetMinute = workdayMinute
         
-        if candidateDate <= now || isSkippedToday {
-            candidateDate = calendar.date(byAdding: .day, value: 1, to: candidateDate)!
+        // 查找未来 30 天内最近的一个生效闹钟点
+        for dayOffset in 0..<30 {
+            guard let checkDay = calendar.date(byAdding: .day, value: dayOffset, to: now) else { continue }
+            
+            // 如果是今天且用户已手动跳过，忽略今天
+            if dayOffset == 0 && isSkippedToday {
+                continue
+            }
+            
+            let isEffectiveWorkday = HolidayManager.shared.shouldTreatAsWorkday(
+                date: checkDay,
+                smartHoliday: smartHolidayEnabled,
+                smartWorkday: smartWorkdayEnabled
+            )
+            let dayAttr = HolidayManager.shared.getDayAttribute(for: checkDay)
+            
+            var shouldRingThisDay = false
+            var h = workdayHour
+            var m = workdayMinute
+            var badge = "工作日"
+            
+            switch repeatSchedule {
+            case .smartWorkday:
+                if isEffectiveWorkday {
+                    shouldRingThisDay = true
+                    h = workdayHour
+                    m = workdayMinute
+                    badge = dayAttr.isAdjustedWorkday ? (dayAttr.name ?? "调休上班") : "工作日"
+                } else {
+                    if weekendEnabled {
+                        shouldRingThisDay = true
+                        h = weekendHour
+                        m = weekendMinute
+                        badge = dayAttr.isStatutoryHoliday ? (dayAttr.name ?? "假期") : "周末"
+                    } else {
+                        shouldRingThisDay = false
+                    }
+                }
+                
+            case .everyday:
+                shouldRingThisDay = true
+                h = alarmHour
+                m = alarmMinute
+                badge = dayAttr.badgeText
+                
+            case .weekdays:
+                if smartWorkdayEnabled && dayAttr.isAdjustedWorkday {
+                    shouldRingThisDay = true
+                } else if smartHolidayEnabled && dayAttr.isStatutoryHoliday {
+                    shouldRingThisDay = false
+                } else {
+                    let w = calendar.component(.weekday, from: checkDay)
+                    shouldRingThisDay = (w >= 2 && w <= 6)
+                }
+                h = alarmHour
+                m = alarmMinute
+                badge = dayAttr.badgeText
+                
+            case .weekends:
+                let w = calendar.component(.weekday, from: checkDay)
+                shouldRingThisDay = (w == 1 || w == 7)
+                h = alarmHour
+                m = alarmMinute
+                badge = "周末"
+                
+            case .custom:
+                let w = calendar.component(.weekday, from: checkDay)
+                shouldRingThisDay = customRepeatDays.contains(w)
+                h = alarmHour
+                m = alarmMinute
+                badge = "自定义"
+            }
+            
+            guard shouldRingThisDay else { continue }
+            
+            var components = calendar.dateComponents([.year, .month, .day], from: checkDay)
+            components.hour = h
+            components.minute = m
+            components.second = 0
+            
+            guard let scheduledDate = calendar.date(from: components) else { continue }
+            
+            if scheduledDate > now {
+                foundDate = scheduledDate
+                foundBadge = badge
+                targetHour = h
+                targetMinute = m
+                break
+            }
         }
         
-        var loopCount = 0
-        while !matchesSchedule(candidateDate) && loopCount < 14 {
-            candidateDate = calendar.date(byAdding: .day, value: 1, to: candidateDate)!
-            loopCount += 1
-        }
-        
-        if loopCount >= 14 {
-            // 用户自定义星期未勾选任何日期
+        guard let candidateDate = foundDate else {
             self.nextAlarmDate = nil
-            self.countdownString = "未勾选响铃日期"
+            self.countdownString = "近期无响铃安排"
+            self.nextAlarmBadge = "无排期"
             PowerManager.shared.cancelCurrentWake()
             return
         }
         
         self.nextAlarmDate = candidateDate
+        self.nextAlarmBadge = foundBadge
+        self.nextAlarmTargetHour = targetHour
+        self.nextAlarmTargetMinute = targetMinute
         self.isSnoozing = false
         PowerManager.shared.scheduleWake(at: candidateDate)
         updateCountdown()
-    }
-    
-    private func matchesSchedule(_ date: Date) -> Bool {
-        let weekday = Calendar.current.component(.weekday, from: date)
-        switch repeatSchedule {
-        case .everyday:
-            return true
-        case .weekdays:
-            return weekday >= 2 && weekday <= 6
-        case .weekends:
-            return weekday == 1 || weekday == 7
-        case .custom:
-            return customRepeatDays.contains(weekday)
-        }
     }
     
     private func setupTimers() {
@@ -263,6 +375,9 @@ public final class AppState: ObservableObject {
         } else {
             countdownString = "\(prefix)\(seconds)秒后"
         }
+        
+        let todayAttr = HolidayManager.shared.getDayAttribute(for: Date())
+        self.todayScheduleInfo = todayAttr.badgeText
     }
     
     private func checkAlarmTrigger() {
