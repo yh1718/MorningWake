@@ -214,12 +214,20 @@ public final class AppState: ObservableObject {
     // MARK: - Scheduling Logic
     
     public func reschedule() {
+        if !Thread.isMainThread {
+            DispatchQueue.main.async { [weak self] in
+                self?.reschedule()
+            }
+            return
+        }
         objectWillChange.send()
         
         guard isAlarmEnabled else {
             nextAlarmDate = nil
             countdownString = "已暂停"
             nextAlarmBadge = "已暂停"
+            nextAlarmDayTitle = "已暂停"
+            scheduleNotice = nil
             isSnoozing = false
             PowerManager.shared.cancelCurrentWake()
             return
@@ -359,8 +367,18 @@ public final class AppState: ObservableObject {
         } else if isTomorrow {
             self.nextAlarmDayTitle = "明天 (\(weekdayStr))"
             let todayAttr = HolidayManager.shared.getDayAttribute(for: now)
+            let isTodayEffectiveWorkday = HolidayManager.shared.shouldTreatAsWorkday(
+                date: now,
+                smartHoliday: smartHolidayEnabled,
+                smartWorkday: smartWorkdayEnabled
+            )
+            
             if isSkippedToday {
                 self.scheduleNotice = "今日闹钟已手动跳过 · 自动接力明日排期"
+            } else if repeatSchedule == .smartWorkday && !isTodayEffectiveWorkday && !weekendEnabled {
+                self.scheduleNotice = "今日假期休假静音 · 自动接力明日工作日"
+            } else if repeatSchedule == .custom && !customRepeatDays.contains(calendar.component(.weekday, from: now)) {
+                self.scheduleNotice = "今日非自定义响铃日 · 自动就绪明日排期"
             } else if todayAttr.isStatutoryHoliday {
                 self.scheduleNotice = "今日（\(todayAttr.badgeText)）时刻已过 · 自动接力明日排期"
             } else {

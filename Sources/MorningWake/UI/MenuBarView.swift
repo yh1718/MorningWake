@@ -276,6 +276,10 @@ public struct MenuBarView: View {
     
     private func toggleEditing() {
         withAnimation(.spring(response: 0.35, dampingFraction: 0.82)) {
+            if !isEditingTime {
+                let isWeekendActive = appState.nextAlarmBadge.contains("慢晨") || appState.nextAlarmBadge.contains("周末") || appState.nextAlarmBadge.contains("假期")
+                selectedScheduleTab = isWeekendActive ? 1 : 0
+            }
             isEditingTime.toggle()
         }
     }
