@@ -94,13 +94,19 @@ public struct MenuBarView: View {
                         }
                         
                         Button(action: {
-                            appState.snooze(minutes: 10)
+                            appState.snooze()
                         }) {
-                            Label("小睡 10 分钟", systemImage: "moon.zzz.fill")
+                            Label("小睡 \(appState.snoozeDurationMinutes) 分钟", systemImage: "moon.zzz.fill")
                                 .font(.system(size: 12))
                                 .frame(maxWidth: .infinity)
                         }
                         .buttonStyle(.bordered)
+                        
+                        if appState.isManualVolumeOverridden {
+                            Text("已检测到外部音量调整，已保持手动音量")
+                                .font(.system(size: 10))
+                                .foregroundColor(.secondary)
+                        }
                     }
                 }
                 .padding(12)
@@ -116,7 +122,7 @@ public struct MenuBarView: View {
                         .foregroundColor(.purple)
                     
                     VStack(alignment: .leading, spacing: 2) {
-                        Text("小睡模式开启")
+                        Text("小睡模式开启 (\(appState.snoozeDurationMinutes)分钟)")
                             .font(.system(size: 12, weight: .semibold))
                             .foregroundColor(.purple)
                         Text("闹钟已暂停，将在不久后再次响起")
@@ -161,16 +167,25 @@ public struct MenuBarView: View {
                     .cornerRadius(12)
                 }
                 
-                HStack {
-                    Label(appState.repeatSchedule.rawValue, systemImage: "repeat")
-                        .font(.system(size: 11))
+                HStack(spacing: 6) {
+                    Label(appState.repeatScheduleSummary, systemImage: "repeat")
+                        .font(.system(size: 10))
                         .foregroundColor(.secondary)
                     
                     Text("•")
+                        .font(.system(size: 9))
+                        .foregroundColor(.secondary)
+                    
+                    Label(appState.playerTarget == .localFile ? "本地音乐" : (appState.playerTarget == .youtubeMusic ? "YT Music" : (appState.playerTarget == .appleMusic ? "Apple Music" : "自然和弦")), systemImage: "music.note")
+                        .font(.system(size: 10))
+                        .foregroundColor(.secondary)
+                    
+                    Text("•")
+                        .font(.system(size: 9))
                         .foregroundColor(.secondary)
                     
                     Label("Mac mini 扬声器", systemImage: "hifispeaker.fill")
-                        .font(.system(size: 11))
+                        .font(.system(size: 10))
                         .foregroundColor(.secondary)
                     
                     Spacer()
@@ -186,7 +201,7 @@ public struct MenuBarView: View {
                 VStack(spacing: 6) {
                     HStack {
                         WaveformIndicator(isActive: true)
-                        Text("试跑中：2分钟平滑渐变...")
+                        Text("试跑模拟中 (6秒快速预览)...")
                             .font(.caption)
                             .foregroundColor(.secondary)
                         Spacer()

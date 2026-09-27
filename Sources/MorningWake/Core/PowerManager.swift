@@ -8,6 +8,7 @@ public final class PowerManager {
     private var displayAssertionID: IOPMAssertionID = 0
     private var hasSystemAssertion: Bool = false
     private var hasDisplayAssertion: Bool = false
+    private var currentScheduledWakeDate: Date?
     
     private init() {}
     
@@ -15,6 +16,19 @@ public final class PowerManager {
     
     @discardableResult
     public func scheduleWake(at date: Date) -> Bool {
+        // 先取消上一次已经排期的硬件唤醒，避免旧事件残留
+        if let existing = currentScheduledWakeDate {
+            cancelWake(at: existing)
+        }
+        
+        let timeUntilWake = date.timeIntervalSinceNow
+        // 若目标时间距离当前不足 70 秒，系统已处于工作状态，跳过提前 60 秒的休眠唤醒事件
+        guard timeUntilWake >= 70.0 else {
+            print("[PowerManager] 距离响铃仅 \(Int(timeUntilWake)) 秒，当前系统已处于活跃运行状态，跳过休眠预热注册")
+            self.currentScheduledWakeDate = nil
+            return true
+        }
+        
         // Mac mini 交流供电模式下，在设定时间提前 60 秒硬件预热
         let wakeDate = date.addingTimeInterval(-60.0) as CFDate
         let name = "com.morningwake.alarm" as CFString
@@ -22,6 +36,7 @@ public final class PowerManager {
         
         let status = IOPMSchedulePowerEvent(wakeDate, name, eventType)
         if status == kIOReturnSuccess {
+            self.currentScheduledWakeDate = date
             print("[PowerManager] 成功注册 Mac mini 硬件级休眠定时唤醒: \(date)")
             return true
         } else {
@@ -35,6 +50,15 @@ public final class PowerManager {
         let name = "com.morningwake.alarm" as CFString
         let eventType = kIOPMAutoWake as CFString
         IOPMCancelScheduledPowerEvent(wakeDate, name, eventType)
+        if currentScheduledWakeDate == date {
+            currentScheduledWakeDate = nil
+        }
+    }
+    
+    public func cancelCurrentWake() {
+        if let current = currentScheduledWakeDate {
+            cancelWake(at: current)
+        }
     }
     
     // MARK: - Wake Display & Prevent Sleep (点亮显示器与防休眠)

@@ -5,7 +5,8 @@ import AVFoundation
 public enum PlayerTarget: String, CaseIterable, Identifiable {
     case youtubeMusic = "YouTube Music"
     case appleMusic = "Apple Music (系统自带)"
-    case fallbackOnly = "仅播放离线自然唤醒声"
+    case localFile = "自定义本地音频文件"
+    case fallbackOnly = "内置自然和弦唤醒声"
     
     public var id: String { rawValue }
 }
@@ -17,6 +18,7 @@ public final class PlayerController: ObservableObject {
     @Published public private(set) var activePlayerName: String = "未播放"
     
     private var fallbackAudioPlayer: AVAudioPlayer?
+    private var customAudioPlayer: AVAudioPlayer?
     private let ytBundleId = "com.github.th-ch.youtube-music"
     
     private init() {}
@@ -25,6 +27,7 @@ public final class PlayerController: ObservableObject {
     
     public func startPlayback(
         target: PlayerTarget = .youtubeMusic,
+        customAudioPath: String? = nil,
         forceFallbackIfFailed: Bool = true,
         completion: ((Bool) -> Void)? = nil
     ) {
@@ -58,6 +61,22 @@ public final class PlayerController: ObservableObject {
                 } else {
                     completion?(false)
                 }
+            }
+            
+        case .localFile:
+            if let path = customAudioPath, !path.isEmpty, FileManager.default.fileExists(atPath: path) {
+                let success = playCustomAudio(filePath: path)
+                if success {
+                    completion?(true)
+                    return
+                }
+            }
+            if forceFallbackIfFailed {
+                print("[PlayerController] 自定义音频加载失败，回退至内置唤醒音")
+                playFallbackAudio()
+                completion?(true)
+            } else {
+                completion?(false)
             }
             
         case .fallbackOnly:
@@ -180,10 +199,39 @@ public final class PlayerController: ObservableObject {
         fallbackAudioPlayer = nil
     }
     
+    // MARK: - Custom Audio File Playback
+    
+    public func playCustomAudio(filePath: String) -> Bool {
+        stopFallbackAudio()
+        stopCustomAudio()
+        
+        let url = URL(fileURLWithPath: filePath)
+        do {
+            let player = try AVAudioPlayer(contentsOf: url)
+            player.numberOfLoops = -1
+            player.prepareToPlay()
+            player.play()
+            self.customAudioPlayer = player
+            self.isPlaying = true
+            self.activePlayerName = url.lastPathComponent
+            print("[PlayerController] 正在播放自定义音频: \(url.lastPathComponent)")
+            return true
+        } catch {
+            print("[PlayerController] 自定义音频文件播放失败: \(error.localizedDescription)")
+            return false
+        }
+    }
+    
+    public func stopCustomAudio() {
+        customAudioPlayer?.stop()
+        customAudioPlayer = nil
+    }
+    
     // MARK: - Stop Playback
     
     public func stopPlayback(for target: PlayerTarget = .youtubeMusic) {
         stopFallbackAudio()
+        stopCustomAudio()
         
         switch target {
         case .youtubeMusic:
@@ -205,7 +253,7 @@ public final class PlayerController: ObservableObject {
             var err: NSDictionary?
             NSAppleScript(source: script)?.executeAndReturnError(&err)
             
-        case .fallbackOnly:
+        case .localFile, .fallbackOnly:
             break
         }
         

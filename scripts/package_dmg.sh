@@ -19,6 +19,14 @@ mkdir -p "$DMG_STAGE"
 cp -R "$APP_BUNDLE" "$DMG_STAGE/"
 ln -s /Applications "$DMG_STAGE/Applications"
 
+# 为 DMG 磁盘卷设置专属高清图标
+if [ -f "$ROOT_DIR/Support/AppIcon.icns" ]; then
+    cp "$ROOT_DIR/Support/AppIcon.icns" "$DMG_STAGE/.VolumeIcon.icns"
+    if command -v SetFile >/dev/null 2>&1; then
+        SetFile -a C "$DMG_STAGE" || true
+    fi
+fi
+
 echo "==> 3. 生成压缩版 macOS 原生 .dmg 磁盘镜像..."
 hdiutil create -volname "MorningWake" \
                -srcfolder "$DMG_STAGE" \

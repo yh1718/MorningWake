@@ -56,9 +56,40 @@ public final class AudioEngine: ObservableObject {
     private var lastAppliedVolume: Float = 0.0
     private var onProgressCallback: ((Float) -> Void)?
     private var onCompleteCallback: (() -> Void)?
+    private var onInterventionCallback: (() -> Void)?
+    private var consecutiveDiscrepancyCount: Int = 0
     
     private init() {
         refreshAudioDevices()
+        setupDeviceListeners()
+    }
+    
+    private func setupDeviceListeners() {
+        var devicesAddress = AudioObjectPropertyAddress(
+            mSelector: kAudioHardwarePropertyDevices,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain
+        )
+        AudioObjectAddPropertyListenerBlock(
+            AudioObjectID(kAudioObjectSystemObject),
+            &devicesAddress,
+            DispatchQueue.main
+        ) { [weak self] _, _ in
+            self?.refreshAudioDevices()
+        }
+        
+        var defaultDevAddress = AudioObjectPropertyAddress(
+            mSelector: kAudioHardwarePropertyDefaultOutputDevice,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain
+        )
+        AudioObjectAddPropertyListenerBlock(
+            AudioObjectID(kAudioObjectSystemObject),
+            &defaultDevAddress,
+            DispatchQueue.main
+        ) { [weak self] _, _ in
+            self?.refreshAudioDevices()
+        }
     }
     
     // MARK: - Mac mini M4 Audio Device Enumeration
@@ -133,7 +164,13 @@ public final class AudioEngine: ObservableObject {
             ))
         }
         
-        self.availableDevices = result
+        if Thread.isMainThread {
+            self.availableDevices = result
+        } else {
+            DispatchQueue.main.async {
+                self.availableDevices = result
+            }
+        }
     }
     
     // MARK: - CoreAudio Device Management
@@ -266,6 +303,7 @@ public final class AudioEngine: ObservableObject {
         duration: TimeInterval,
         curve: FadeCurve = .smoothStep,
         onProgress: ((Float) -> Void)? = nil,
+        onIntervention: (() -> Void)? = nil,
         onComplete: (() -> Void)? = nil
     ) {
         stopFade()
@@ -279,7 +317,9 @@ public final class AudioEngine: ObservableObject {
         self.fadeDuration = max(1.0, duration)
         self.currentCurve = curve
         self.onProgressCallback = onProgress
+        self.onInterventionCallback = onIntervention
         self.onCompleteCallback = onComplete
+        self.consecutiveDiscrepancyCount = 0
         self.fadeStartTime = Date()
         self.isFading = true
         
@@ -300,10 +340,26 @@ public final class AudioEngine: ObservableObject {
         guard let startTime = fadeStartTime else { return }
         
         let currentSysVol = getVolume()
-        if abs(currentSysVol - lastAppliedVolume) > 0.06 {
-            print("[AudioEngine] 检测到外部/物理音量干预 (\(currentSysVol) vs \(lastAppliedVolume))，退出渐变")
+        let diff = abs(currentSysVol - lastAppliedVolume)
+        
+        // 容差过滤：单个音量阶梯约为 0.0625。若偏差 > 0.08 且连续 2 个周期或单次 > 0.15，则判定为物理键/用户接管
+        if diff > 0.15 {
+            print("[AudioEngine] 检测到显著外部音量调整 (\(currentSysVol) vs \(lastAppliedVolume))，退出渐变")
+            let intervention = onInterventionCallback
             stopFade()
+            intervention?()
             return
+        } else if diff > 0.08 {
+            consecutiveDiscrepancyCount += 1
+            if consecutiveDiscrepancyCount >= 2 {
+                print("[AudioEngine] 连续检测到外部音量干预 (\(currentSysVol) vs \(lastAppliedVolume))，退出渐变")
+                let intervention = onInterventionCallback
+                stopFade()
+                intervention?()
+                return
+            }
+        } else {
+            consecutiveDiscrepancyCount = 0
         }
         
         let elapsed = Date().timeIntervalSince(startTime)

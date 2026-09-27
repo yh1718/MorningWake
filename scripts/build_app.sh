@@ -27,6 +27,13 @@ if [ -d "$BUNDLE_RESOURCE_DIR" ]; then
     cp -R "$BUNDLE_RESOURCE_DIR" "$APP_BUNDLE/Contents/Resources/"
 fi
 
+# 复制高清 AppIcon
+if [ ! -f "$ROOT_DIR/Support/AppIcon.icns" ]; then
+    echo "==> 生成高清 App 图标..."
+    swift "$ROOT_DIR/Support/generate_icon.swift"
+fi
+cp "$ROOT_DIR/Support/AppIcon.icns" "$APP_BUNDLE/Contents/Resources/AppIcon.icns"
+
 # 复制备用音频
 cp "$ROOT_DIR/Sources/MorningWake/Resources/fallback_alarm.wav" "$APP_BUNDLE/Contents/Resources/"
 

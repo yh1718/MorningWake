@@ -1,9 +1,17 @@
 import SwiftUI
+import UniformTypeIdentifiers
+import AVFoundation
+import UserNotifications
 
 public struct SettingsView: View {
     @ObservedObject var appState = AppState.shared
     @ObservedObject var audioEngine = AudioEngine.shared
     @Environment(\.dismiss) private var dismiss
+    
+    @State private var isPreviewPlaying: Bool = false
+    @State private var previewPlayer: AVAudioPlayer? = nil
+    @State private var notificationStatus: String = "检测中..."
+    @State private var isNotificationAuthorized: Bool = true
     
     public init() {}
     
@@ -108,7 +116,76 @@ public struct SettingsView: View {
                         .padding(8)
                     }
                     
-                    // 3. 唤醒时间与日程
+                    // 3. 唤醒音源与应用
+                    GroupBox(label: Label("唤醒音源与应用", systemImage: "music.note.list")) {
+                        VStack(alignment: .leading, spacing: 10) {
+                            HStack {
+                                Text("播放目标")
+                                Spacer()
+                                Picker("", selection: Binding(
+                                    get: { appState.playerTarget },
+                                    set: { appState.playerTarget = $0 }
+                                )) {
+                                    ForEach(PlayerTarget.allCases) { item in
+                                        Text(item.rawValue).tag(item)
+                                    }
+                                }
+                                .frame(width: 200)
+                            }
+                            
+                            if appState.playerTarget == .localFile {
+                                VStack(alignment: .leading, spacing: 6) {
+                                    HStack {
+                                        Text(appState.customAudioPath.isEmpty ? "未选择音频文件" : URL(fileURLWithPath: appState.customAudioPath).lastPathComponent)
+                                            .font(.system(size: 11))
+                                            .foregroundColor(appState.customAudioPath.isEmpty ? .secondary : .primary)
+                                            .lineLimit(1)
+                                            .truncationMode(.middle)
+                                        Spacer()
+                                        
+                                        if !appState.customAudioPath.isEmpty {
+                                            Button(action: {
+                                                toggleAudioPreview()
+                                            }) {
+                                                Label(isPreviewPlaying ? "停止" : "试听", systemImage: isPreviewPlaying ? "stop.fill" : "play.fill")
+                                                    .font(.system(size: 11))
+                                            }
+                                            .buttonStyle(.bordered)
+                                            
+                                            Button("清除") {
+                                                stopPreview()
+                                                appState.customAudioPath = ""
+                                            }
+                                            .font(.system(size: 11))
+                                            .buttonStyle(.bordered)
+                                        }
+                                        
+                                        Button("选择文件...") {
+                                            selectCustomAudioFile()
+                                        }
+                                        .font(.system(size: 11))
+                                    }
+                                    Text("支持 MP3, M4A, FLAC, WAV, AAC, AIFF 等常见本地音乐格式")
+                                        .font(.system(size: 10))
+                                        .foregroundColor(.secondary)
+                                }
+                                .padding(8)
+                                .background(Color(NSColor.controlBackgroundColor))
+                                .cornerRadius(6)
+                            } else if appState.playerTarget == .youtubeMusic {
+                                Text("将在响铃时优先唤醒 YouTube Music 客户端并发送播放指令")
+                                    .font(.system(size: 10))
+                                    .foregroundColor(.secondary)
+                            } else if appState.playerTarget == .appleMusic {
+                                Text("将在响铃时通过系统 AppleScript 调度自带「音乐」App 播放")
+                                    .font(.system(size: 10))
+                                    .foregroundColor(.secondary)
+                            }
+                        }
+                        .padding(8)
+                    }
+                    
+                    // 4. 唤醒时间与日程
                     GroupBox(label: Label("定时与日程", systemImage: "alarm.fill")) {
                         VStack(spacing: 12) {
                             HStack {
@@ -147,13 +224,59 @@ public struct SettingsView: View {
                                         Text(item.rawValue).tag(item)
                                     }
                                 }
-                                .frame(width: 160)
+                                .frame(width: 170)
+                            }
+                            
+                            // 自定义星期多选器
+                            if appState.repeatSchedule == .custom {
+                                VStack(alignment: .leading, spacing: 6) {
+                                    Text("自定义响铃星期:")
+                                        .font(.system(size: 11))
+                                        .foregroundColor(.secondary)
+                                    
+                                    HStack(spacing: 4) {
+                                        // 星期定义：2:一, 3:二, 4:三, 5:四, 6:五, 7:六, 1:日
+                                        let weekDays: [(Int, String)] = [
+                                            (2, "一"), (3, "二"), (4, "三"), (5, "四"), (6, "五"), (7, "六"), (1, "日")
+                                        ]
+                                        ForEach(weekDays, id: \.0) { day, name in
+                                            let isSelected = appState.customRepeatDays.contains(day)
+                                            Button(action: {
+                                                toggleRepeatDay(day)
+                                            }) {
+                                                Text(name)
+                                                    .font(.system(size: 11, weight: isSelected ? .bold : .regular))
+                                                    .frame(maxWidth: .infinity)
+                                                    .padding(.vertical, 4)
+                                                    .background(isSelected ? Color.orange : Color(NSColor.controlBackgroundColor))
+                                                    .foregroundColor(isSelected ? .white : .primary)
+                                                    .cornerRadius(6)
+                                            }
+                                            .buttonStyle(.plain)
+                                        }
+                                    }
+                                }
+                                .padding(.top, 4)
+                            }
+                            
+                            Divider()
+                            
+                            HStack {
+                                Text("小睡时长")
+                                Spacer()
+                                Picker("", selection: $appState.snoozeDurationMinutes) {
+                                    Text("5 分钟").tag(5)
+                                    Text("10 分钟 (推荐)").tag(10)
+                                    Text("15 分钟").tag(15)
+                                    Text("20 分钟").tag(20)
+                                }
+                                .frame(width: 140)
                             }
                         }
                         .padding(8)
                     }
                     
-                    // 4. 音频淡入曲线与音量（默认 20% -> 90% 2 分钟）
+                    // 5. 音频淡入曲线与音量（默认 20% -> 90% 2 分钟）
                     GroupBox(label: Label("听觉渐变与音量", systemImage: "speaker.wave.3.fill")) {
                         VStack(alignment: .leading, spacing: 14) {
                             HStack {
@@ -223,7 +346,7 @@ public struct SettingsView: View {
                         .padding(8)
                     }
                     
-                    // 5. 系统开机项与兜底
+                    // 6. 系统开机项与兜底
                     GroupBox(label: Label("系统行为与安全兜底", systemImage: "shield.lefthalf.filled")) {
                         VStack(spacing: 10) {
                             Toggle("开机自动启动 (SMAppService)", isOn: Binding(
@@ -236,6 +359,26 @@ public struct SettingsView: View {
                             
                             Toggle("应用启动失败时自动切换离线备用音", isOn: $appState.fallbackSoundEnabled)
                                 .help("避免断网或客户端卡死导致未响铃")
+                            
+                            Divider()
+                            
+                            HStack {
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text("系统通知与锁屏权限")
+                                        .font(.system(size: 13))
+                                    Text(notificationStatus)
+                                        .font(.system(size: 10))
+                                        .foregroundColor(isNotificationAuthorized ? .green : .orange)
+                                }
+                                Spacer()
+                                if !isNotificationAuthorized {
+                                    Button("去授权") {
+                                        openNotificationSettings()
+                                    }
+                                    .font(.system(size: 11))
+                                    .buttonStyle(.bordered)
+                                }
+                            }
                         }
                         .padding(8)
                     }
@@ -243,6 +386,91 @@ public struct SettingsView: View {
                 .padding()
             }
         }
-        .frame(width: 460, height: 600)
+        .frame(width: 480, height: 650)
+        .onAppear {
+            checkNotificationPermission()
+        }
+        .onDisappear {
+            stopPreview()
+        }
+    }
+    
+    private func checkNotificationPermission() {
+        UNUserNotificationCenter.current().getNotificationSettings { settings in
+            DispatchQueue.main.async {
+                switch settings.authorizationStatus {
+                case .authorized, .provisional:
+                    self.isNotificationAuthorized = true
+                    self.notificationStatus = "已开启 (锁屏交互已就绪)"
+                case .denied:
+                    self.isNotificationAuthorized = false
+                    self.notificationStatus = "未授权 (无法呈现锁屏唤醒卡片)"
+                default:
+                    self.isNotificationAuthorized = false
+                    self.notificationStatus = "未配置"
+                }
+            }
+        }
+    }
+    
+    private func openNotificationSettings() {
+        if let url = URL(string: "x-apple.systempreferences:com.apple.Notifications-Settings.extension") {
+            NSWorkspace.shared.open(url)
+        } else if let url = URL(string: "x-apple.systempreferences:com.apple.preference.notifications") {
+            NSWorkspace.shared.open(url)
+        }
+    }
+    
+    private func toggleAudioPreview() {
+        if isPreviewPlaying {
+            stopPreview()
+        } else {
+            guard !appState.customAudioPath.isEmpty else { return }
+            do {
+                let url = URL(fileURLWithPath: appState.customAudioPath)
+                let player = try AVAudioPlayer(contentsOf: url)
+                player.prepareToPlay()
+                player.play()
+                self.previewPlayer = player
+                self.isPreviewPlaying = true
+            } catch {
+                print("[SettingsView] 试听失败: \(error)")
+            }
+        }
+    }
+    
+    private func stopPreview() {
+        previewPlayer?.stop()
+        previewPlayer = nil
+        isPreviewPlaying = false
+    }
+    
+    private func toggleRepeatDay(_ day: Int) {
+        var days = appState.customRepeatDays
+        if days.contains(day) {
+            days.remove(day)
+        } else {
+            days.insert(day)
+        }
+        appState.customRepeatDays = days
+    }
+    
+    private func selectCustomAudioFile() {
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = false
+        panel.allowsMultipleSelection = false
+        
+        var types: [UTType] = [.audio, .mp3, .wav, .aiff]
+        if let m4a = UTType(filenameExtension: "m4a") { types.append(m4a) }
+        if let flac = UTType(filenameExtension: "flac") { types.append(flac) }
+        if let aac = UTType(filenameExtension: "aac") { types.append(aac) }
+        if let ogg = UTType(filenameExtension: "ogg") { types.append(ogg) }
+        panel.allowedContentTypes = types
+        
+        if panel.runModal() == .OK, let url = panel.url {
+            stopPreview()
+            appState.customAudioPath = url.path
+        }
     }
 }

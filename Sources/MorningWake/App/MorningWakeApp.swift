@@ -6,7 +6,15 @@ public final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificat
         let center = UNUserNotificationCenter.current()
         center.delegate = self
         
-        // 注册锁屏及横幅的交互动作
+        AppDelegate.updateNotificationCategory(snoozeMinutes: AppState.shared.snoozeDurationMinutes)
+        center.requestAuthorization(options: [.alert, .sound, .badge]) { _, _ in }
+    }
+    
+    public static func updateNotificationCategory(snoozeMinutes: Int) {
+        guard NSClassFromString("XCTestCase") == nil,
+              !(Bundle.main.bundleIdentifier?.contains("xctest") ?? false),
+              Bundle.main.bundleIdentifier != nil else { return }
+        let center = UNUserNotificationCenter.current()
         let keepAction = UNNotificationAction(
             identifier: "ACTION_KEEP",
             title: "我已清醒 (保持播放)",
@@ -14,7 +22,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificat
         )
         let snoozeAction = UNNotificationAction(
             identifier: "ACTION_SNOOZE",
-            title: "小睡 10 分钟",
+            title: "小睡 \(snoozeMinutes) 分钟",
             options: []
         )
         let stopAction = UNNotificationAction(
@@ -31,7 +39,6 @@ public final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificat
         )
         
         center.setNotificationCategories([category])
-        center.requestAuthorization(options: [.alert, .sound, .badge]) { _, _ in }
     }
     
     // 监听锁屏或通知中心的操作响应
@@ -45,7 +52,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificat
             case "ACTION_KEEP":
                 AppState.shared.keepPlaying()
             case "ACTION_SNOOZE":
-                AppState.shared.snooze(minutes: 10)
+                AppState.shared.snooze()
             case "ACTION_STOP":
                 AppState.shared.stopAlarm()
             default:

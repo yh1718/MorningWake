@@ -9,6 +9,7 @@ public enum RepeatSchedule: String, CaseIterable, Identifiable {
     case everyday = "每天"
     case weekdays = "仅工作日 (周一至周五)"
     case weekends = "仅周末"
+    case custom = "自定义星期"
     
     public var id: String { rawValue }
 }
@@ -39,6 +40,40 @@ public final class AppState: ObservableObject {
         set { repeatScheduleRaw = newValue.rawValue }
     }
     
+    // 存储自定义选中的星期集合（1: 周日, 2: 周一 ... 7: 周六）
+    @AppStorage("customRepeatDaysRaw") public var customRepeatDaysRaw: String = "2,3,4,5,6" {
+        didSet { reschedule() }
+    }
+    
+    public var customRepeatDays: Set<Int> {
+        get {
+            let parts = customRepeatDaysRaw.split(separator: ",").compactMap { Int($0.trimmingCharacters(in: .whitespaces)) }
+            return Set(parts)
+        }
+        set {
+            customRepeatDaysRaw = newValue.sorted().map(String.init).joined(separator: ",")
+            reschedule()
+        }
+    }
+    
+    public var repeatScheduleSummary: String {
+        switch repeatSchedule {
+        case .everyday:
+            return "每天"
+        case .weekdays:
+            return "仅工作日 (周一至五)"
+        case .weekends:
+            return "仅周末 (周六日)"
+        case .custom:
+            let days = customRepeatDays
+            if days.count == 7 { return "每天" }
+            if days.isEmpty { return "未选日期" }
+            let nameMap: [Int: String] = [2: "一", 3: "二", 4: "三", 5: "四", 6: "五", 7: "六", 1: "日"]
+            let sorted = [2, 3, 4, 5, 6, 7, 1].filter { days.contains($0) }
+            return "周" + sorted.compactMap { nameMap[$0] }.joined(separator: "、")
+        }
+    }
+    
     @AppStorage("startVolume") public var startVolume: Double = 0.2
     @AppStorage("targetVolume") public var targetVolume: Double = 0.9
     @AppStorage("fadeDuration") public var fadeDuration: Double = 120.0
@@ -55,6 +90,13 @@ public final class AppState: ObservableObject {
         set { playerTargetRaw = newValue.rawValue }
     }
     
+    @AppStorage("customAudioPath") public var customAudioPath: String = ""
+    @AppStorage("snoozeDurationMinutes") public var snoozeDurationMinutes: Int = 10 {
+        didSet {
+            AppDelegate.updateNotificationCategory(snoozeMinutes: snoozeDurationMinutes)
+        }
+    }
+    
     @AppStorage("forceBuiltInSpeaker") public var forceBuiltInSpeaker: Bool = true
     @AppStorage("fallbackSoundEnabled") public var fallbackSoundEnabled: Bool = true
     @AppStorage("restorePreviousDevice") public var restorePreviousDevice: Bool = true
@@ -67,6 +109,7 @@ public final class AppState: ObservableObject {
     @Published public var isAlarmRinging: Bool = false
     @Published public var isTestRunning: Bool = false
     @Published public var isSnoozing: Bool = false
+    @Published public var isManualVolumeOverridden: Bool = false
     @Published public var nextAlarmDate: Date?
     @Published public var countdownString: String = "计算中..."
     @Published public var currentVolumePercent: Int = 0
@@ -127,6 +170,7 @@ public final class AppState: ObservableObject {
             nextAlarmDate = nil
             countdownString = "已暂停"
             isSnoozing = false
+            PowerManager.shared.cancelCurrentWake()
             return
         }
         
@@ -149,8 +193,18 @@ public final class AppState: ObservableObject {
             candidateDate = calendar.date(byAdding: .day, value: 1, to: candidateDate)!
         }
         
-        while !matchesSchedule(candidateDate) {
+        var loopCount = 0
+        while !matchesSchedule(candidateDate) && loopCount < 14 {
             candidateDate = calendar.date(byAdding: .day, value: 1, to: candidateDate)!
+            loopCount += 1
+        }
+        
+        if loopCount >= 14 {
+            // 用户自定义星期未勾选任何日期
+            self.nextAlarmDate = nil
+            self.countdownString = "未勾选响铃日期"
+            PowerManager.shared.cancelCurrentWake()
+            return
         }
         
         self.nextAlarmDate = candidateDate
@@ -168,6 +222,8 @@ public final class AppState: ObservableObject {
             return weekday >= 2 && weekday <= 6
         case .weekends:
             return weekday == 1 || weekday == 7
+        case .custom:
+            return customRepeatDays.contains(weekday)
         }
     }
     
@@ -229,6 +285,7 @@ public final class AppState: ObservableObject {
     public func triggerMorningAlarm() {
         isAlarmRinging = true
         isSnoozing = false
+        isManualVolumeOverridden = false
         skippedDayTimestamp = 0.0
         
         // 记录触发前的原音频输出设备（以便关闭后能无缝恢复至显示器或耳机）
@@ -243,6 +300,7 @@ public final class AppState: ObservableObject {
         
         PlayerController.shared.startPlayback(
             target: playerTarget,
+            customAudioPath: customAudioPath,
             forceFallbackIfFailed: fallbackSoundEnabled
         )
         
@@ -254,6 +312,12 @@ public final class AppState: ObservableObject {
             onProgress: { [weak self] vol in
                 DispatchQueue.main.async {
                     self?.currentVolumePercent = Int(vol * 100)
+                }
+            },
+            onIntervention: { [weak self] in
+                DispatchQueue.main.async {
+                    self?.isManualVolumeOverridden = true
+                    print("[AppState] 用户物理/手动接管音量，保持当前音量播音")
                 }
             },
             onComplete: {
@@ -273,14 +337,23 @@ public final class AppState: ObservableObject {
         reschedule()
     }
     
+    private var isNotificationSupportedEnvironment: Bool {
+        NSClassFromString("XCTestCase") == nil &&
+        !(Bundle.main.bundleIdentifier?.contains("xctest") ?? false) &&
+        Bundle.main.bundleIdentifier != nil
+    }
+    
     public func keepPlaying() {
         autoStopTimer?.invalidate()
         autoStopTimer = nil
         isAlarmRinging = false
         isSnoozing = false
+        isManualVolumeOverridden = false
         AudioEngine.shared.stopFade()
         PowerManager.shared.allowSleep()
-        UNUserNotificationCenter.current().removeDeliveredNotifications(withIdentifiers: ["morningwake.ringing"])
+        if isNotificationSupportedEnvironment {
+            UNUserNotificationCenter.current().removeDeliveredNotifications(withIdentifiers: ["morningwake.ringing"])
+        }
         reschedule()
     }
     
@@ -289,10 +362,13 @@ public final class AppState: ObservableObject {
         autoStopTimer = nil
         isAlarmRinging = false
         isSnoozing = false
+        isManualVolumeOverridden = false
         AudioEngine.shared.stopFade()
         PlayerController.shared.stopPlayback(for: playerTarget)
         PowerManager.shared.allowSleep()
-        UNUserNotificationCenter.current().removeDeliveredNotifications(withIdentifiers: ["morningwake.ringing"])
+        if isNotificationSupportedEnvironment {
+            UNUserNotificationCenter.current().removeDeliveredNotifications(withIdentifiers: ["morningwake.ringing"])
+        }
         
         // 恢复触发前的原始音频设备（例如切回显示器或耳机）
         if restorePreviousDevice, let originalID = previousAudioDeviceID {
@@ -304,16 +380,20 @@ public final class AppState: ObservableObject {
         reschedule()
     }
     
-    public func snooze(minutes: Int = 10) {
+    public func snooze(minutes: Int? = nil) {
+        let actualMinutes = minutes ?? snoozeDurationMinutes
         autoStopTimer?.invalidate()
         autoStopTimer = nil
         AudioEngine.shared.stopFade()
         PlayerController.shared.stopPlayback(for: playerTarget)
         isAlarmRinging = false
+        isManualVolumeOverridden = false
         PowerManager.shared.allowSleep()
-        UNUserNotificationCenter.current().removeDeliveredNotifications(withIdentifiers: ["morningwake.ringing"])
+        if isNotificationSupportedEnvironment {
+            UNUserNotificationCenter.current().removeDeliveredNotifications(withIdentifiers: ["morningwake.ringing"])
+        }
         
-        let snoozeDate = Date().addingTimeInterval(TimeInterval(minutes * 60))
+        let snoozeDate = Date().addingTimeInterval(TimeInterval(actualMinutes * 60))
         self.nextAlarmDate = snoozeDate
         self.isSnoozing = true
         self.isAlarmEnabled = true
@@ -324,9 +404,7 @@ public final class AppState: ObservableObject {
     public func cancelSnooze() {
         guard isSnoozing else { return }
         isSnoozing = false
-        if let next = nextAlarmDate {
-            PowerManager.shared.cancelWake(at: next)
-        }
+        PowerManager.shared.cancelCurrentWake()
         reschedule()
     }
     
@@ -345,13 +423,18 @@ public final class AppState: ObservableObject {
     public func startTestRun() {
         guard !isTestRunning && !isAlarmRinging else { return }
         isTestRunning = true
+        isManualVolumeOverridden = false
         originalVolumeBeforeTest = AudioEngine.shared.getVolume()
         
         if forceBuiltInSpeaker {
             AudioEngine.shared.switchToBuiltInSpeaker()
         }
         
-        PlayerController.shared.startPlayback(target: playerTarget, forceFallbackIfFailed: true)
+        PlayerController.shared.startPlayback(
+            target: playerTarget,
+            customAudioPath: customAudioPath,
+            forceFallbackIfFailed: true
+        )
         
         AudioEngine.shared.startFade(
             from: Float(startVolume),
@@ -361,6 +444,11 @@ public final class AppState: ObservableObject {
             onProgress: { [weak self] vol in
                 DispatchQueue.main.async {
                     self?.currentVolumePercent = Int(vol * 100)
+                }
+            },
+            onIntervention: { [weak self] in
+                DispatchQueue.main.async {
+                    self?.isManualVolumeOverridden = true
                 }
             },
             onComplete: { [weak self] in
@@ -375,6 +463,7 @@ public final class AppState: ObservableObject {
     public func stopTestRun() {
         guard isTestRunning else { return }
         isTestRunning = false
+        isManualVolumeOverridden = false
         AudioEngine.shared.stopFade()
         PlayerController.shared.stopPlayback(for: playerTarget)
         AudioEngine.shared.setVolume(originalVolumeBeforeTest)
@@ -383,9 +472,10 @@ public final class AppState: ObservableObject {
     // MARK: - Interactive Notification
     
     private func sendInteractiveWakeNotification() {
+        guard isNotificationSupportedEnvironment else { return }
         let content = UNMutableNotificationContent()
         content.title = "早安！晨间音乐已开启 🎵"
-        content.body = "正在为您平滑淡入，轻点操作卡片选择清醒或小睡。"
+        content.body = "正在为您平滑淡入，轻点操作卡片选择清醒或小睡 \(snoozeDurationMinutes) 分钟。"
         content.categoryIdentifier = "MORNING_ALARM_CATEGORY"
         
         let request = UNNotificationRequest(
