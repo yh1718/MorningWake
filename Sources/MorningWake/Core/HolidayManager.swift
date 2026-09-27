@@ -35,14 +35,6 @@ public final class HolidayManager {
     // YYYY-MM-DD -> 调休上班说明（原为周末，因调休需正常上班）
     private var adjustedWorkdays: [String: String] = [:]
     
-    private let dateFormatter: DateFormatter = {
-        let df = DateFormatter()
-        df.dateFormat = "yyyy-MM-dd"
-        df.locale = Locale(identifier: "zh_CN")
-        df.timeZone = TimeZone.current
-        return df
-    }()
-    
     private init() {
         loadPresetHolidayData()
     }
@@ -50,8 +42,9 @@ public final class HolidayManager {
     // MARK: - Core Query Interface
     
     public func getDayAttribute(for date: Date) -> DayAttribute {
-        let key = dateFormatter.string(from: date)
-        let weekday = Calendar.current.component(.weekday, from: date) // 1: 周日, 7: 周六
+        let comp = Calendar.current.dateComponents([.year, .month, .day, .weekday], from: date)
+        let key = String(format: "%04d-%02d-%02d", comp.year ?? 0, comp.month ?? 0, comp.day ?? 0)
+        let weekday = comp.weekday ?? 1 // 1: 周日, 7: 周六
         let isStandardWeekend = (weekday == 1 || weekday == 7)
         
         // 1. 优先判定是否为周末调休上班日

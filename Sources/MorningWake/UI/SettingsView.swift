@@ -10,6 +10,7 @@ public struct SettingsView: View {
     
     @State private var isPreviewPlaying: Bool = false
     @State private var previewPlayer: AVAudioPlayer? = nil
+    @StateObject private var previewDelegate = AudioPreviewDelegate()
     @State private var notificationStatus: String = "检测中..."
     @State private var isNotificationAuthorized: Bool = true
     
@@ -559,6 +560,12 @@ public struct SettingsView: View {
             do {
                 let url = URL(fileURLWithPath: appState.customAudioPath)
                 let player = try AVAudioPlayer(contentsOf: url)
+                previewDelegate.onFinish = {
+                    DispatchQueue.main.async {
+                        self.stopPreview()
+                    }
+                }
+                player.delegate = previewDelegate
                 player.prepareToPlay()
                 player.play()
                 self.previewPlayer = player
@@ -602,5 +609,13 @@ public struct SettingsView: View {
             stopPreview()
             appState.customAudioPath = url.path
         }
+    }
+}
+
+private final class AudioPreviewDelegate: NSObject, AVAudioPlayerDelegate, ObservableObject {
+    var onFinish: (() -> Void)?
+    
+    func audioPlayerDidFinishPlaying(_ player: AVAudioPlayer, successfully flag: Bool) {
+        onFinish?()
     }
 }

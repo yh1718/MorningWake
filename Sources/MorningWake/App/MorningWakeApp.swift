@@ -58,8 +58,8 @@ public final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificat
             default:
                 break
             }
+            completionHandler()
         }
-        completionHandler()
     }
     
     public func userNotificationCenter(

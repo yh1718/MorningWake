@@ -16,6 +16,11 @@ public final class PowerManager {
     
     @discardableResult
     public func scheduleWake(at date: Date) -> Bool {
+        // 幂等防抖：若新时间与已排期时间完全一致（误差在1秒内），无需重复注销与注册系统电源事件
+        if let existing = currentScheduledWakeDate, abs(existing.timeIntervalSince(date)) < 1.0 {
+            return true
+        }
+        
         // 先取消上一次已经排期的硬件唤醒，避免旧事件残留
         if let existing = currentScheduledWakeDate {
             cancelWake(at: existing)
