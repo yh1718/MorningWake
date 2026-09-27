@@ -2,6 +2,7 @@ import SwiftUI
 
 public struct MenuBarView: View {
     @ObservedObject var appState = AppState.shared
+    @State private var showQuickEdit: Bool = false
     
     public init() {}
     
@@ -144,13 +145,22 @@ public struct MenuBarView: View {
                 .padding(.horizontal, 12)
             }
             
-            // 核心卡片：下次唤醒时间与倒计时
-            VStack(spacing: 6) {
+            // 核心卡片：下次唤醒时间、修改标签与倒计时
+            VStack(spacing: 8) {
                 HStack(alignment: .firstTextBaseline) {
                     HStack(spacing: 6) {
-                        Text(appState.nextAlarmDate != nil ? String(format: "%02d:%02d", appState.nextAlarmTargetHour, appState.nextAlarmTargetMinute) : "--:--")
-                            .font(.system(size: 34, weight: .semibold, design: .rounded))
+                        // 点击大数字可快捷呼出修改
+                        Button(action: {
+                            showQuickEdit.toggle()
+                        }) {
+                            Text(appState.nextAlarmDate != nil ? String(format: "%02d:%02d", appState.nextAlarmTargetHour, appState.nextAlarmTargetMinute) : "--:--")
+                                .font(.system(size: 34, weight: .semibold, design: .rounded))
+                                .foregroundColor(.primary)
+                        }
+                        .buttonStyle(.plain)
+                        .help("点击快速修改唤醒时刻")
                         
+                        // 状态标签（如“工作日”、“中秋假期”）
                         if !appState.nextAlarmBadge.isEmpty && appState.isAlarmEnabled {
                             Text(appState.nextAlarmBadge)
                                 .font(.system(size: 10, weight: .semibold))
@@ -160,10 +170,33 @@ public struct MenuBarView: View {
                                 .background(Color.orange.opacity(0.15))
                                 .cornerRadius(5)
                         }
+                        
+                        // 明确的【修改】交互标签按钮
+                        Button(action: {
+                            showQuickEdit.toggle()
+                        }) {
+                            HStack(spacing: 2) {
+                                Image(systemName: "pencil")
+                                    .font(.system(size: 8, weight: .semibold))
+                                Text("修改")
+                                    .font(.system(size: 10, weight: .semibold))
+                            }
+                            .foregroundColor(.blue)
+                            .padding(.horizontal, 6)
+                            .padding(.vertical, 2)
+                            .background(Color.blue.opacity(0.12))
+                            .cornerRadius(5)
+                        }
+                        .buttonStyle(.plain)
+                        .help("快速修改唤醒时间与作息")
+                        .popover(isPresented: $showQuickEdit, arrowEdge: .bottom) {
+                            QuickEditView(isPresented: $showQuickEdit)
+                        }
                     }
                     
                     Spacer()
                     
+                    // 倒计时状态小卡片
                     HStack(spacing: 4) {
                         Circle()
                             .fill(appState.isAlarmEnabled ? (appState.isSnoozing ? Color.purple : (appState.isSkippedToday ? Color.orange : Color.green)) : Color.gray)
@@ -184,7 +217,6 @@ public struct MenuBarView: View {
                         .font(.system(size: 10))
                         .foregroundColor(.secondary)
                         .lineLimit(1)
-                        .truncationMode(.tail)
                     
                     Text("•")
                         .font(.system(size: 9))
@@ -282,6 +314,120 @@ public struct MenuBarView: View {
             .padding(.horizontal, 14)
             .padding(.bottom, 12)
         }
-        .frame(width: 315)
+        .frame(width: 320)
+    }
+}
+
+// MARK: - 快速修改时间小浮窗
+
+struct QuickEditView: View {
+    @ObservedObject var appState = AppState.shared
+    @Binding var isPresented: Bool
+    
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack {
+                Text("修改唤醒时间")
+                    .font(.system(size: 12, weight: .bold))
+                Spacer()
+                Button("完成") {
+                    isPresented = false
+                }
+                .font(.system(size: 11, weight: .semibold))
+                .buttonStyle(.borderless)
+                .foregroundColor(.blue)
+            }
+            
+            Divider()
+            
+            if appState.repeatSchedule == .smartWorkday {
+                // 工作日时间快速微调
+                HStack {
+                    Label("工作日", systemImage: "briefcase.fill")
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundColor(.blue)
+                    Spacer()
+                    timePickers(hour: $appState.workdayHour, minute: $appState.workdayMinute)
+                }
+                
+                // 周末时间快速微调与开关
+                HStack {
+                    HStack(spacing: 4) {
+                        Label("周末慢晨", systemImage: "sun.max.fill")
+                            .font(.system(size: 11, weight: .medium))
+                            .foregroundColor(.orange)
+                        Toggle("", isOn: $appState.weekendEnabled)
+                            .toggleStyle(.switch)
+                            .scaleEffect(0.65)
+                    }
+                    Spacer()
+                    if appState.weekendEnabled {
+                        timePickers(hour: $appState.weekendHour, minute: $appState.weekendMinute)
+                    } else {
+                        Text("休息静音")
+                            .font(.system(size: 10))
+                            .foregroundColor(.secondary)
+                    }
+                }
+            } else {
+                // 传统响铃时间微调
+                HStack {
+                    Text("响铃时间")
+                        .font(.system(size: 11, weight: .medium))
+                    Spacer()
+                    timePickers(hour: $appState.alarmHour, minute: $appState.alarmMinute)
+                }
+            }
+            
+            Divider()
+            
+            HStack {
+                Button(action: {
+                    isPresented = false
+                    SettingsWindowManager.shared.showSettings()
+                }) {
+                    HStack(spacing: 3) {
+                        Image(systemName: "gearshape")
+                        Text("偏好设置...")
+                    }
+                    .font(.system(size: 10))
+                    .foregroundColor(.secondary)
+                }
+                .buttonStyle(.plain)
+                
+                Spacer()
+                
+                if !appState.todayScheduleInfo.isEmpty {
+                    Text("今日: \(appState.todayScheduleInfo)")
+                        .font(.system(size: 9))
+                        .foregroundColor(.secondary)
+                }
+            }
+        }
+        .padding(12)
+        .frame(width: 250)
+    }
+    
+    private func timePickers(hour: Binding<Int>, minute: Binding<Int>) -> some View {
+        HStack(spacing: 2) {
+            Picker("", selection: hour) {
+                ForEach(0..<24) { h in
+                    Text(String(format: "%02d", h)).tag(h)
+                }
+            }
+            .labelsHidden()
+            .frame(width: 52)
+            
+            Text(":")
+                .font(.system(size: 11, weight: .bold))
+            
+            Picker("", selection: minute) {
+                ForEach(0..<60) { m in
+                    Text(String(format: "%02d", m)).tag(m)
+                }
+            }
+            .labelsHidden()
+            .frame(width: 52)
+        }
     }
 }

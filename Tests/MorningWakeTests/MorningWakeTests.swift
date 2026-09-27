@@ -146,6 +146,6 @@ final class MorningWakeTests: XCTestCase {
         
         state.weekendEnabled = false
         let summaryClosed = state.repeatScheduleSummary
-        XCTAssertTrue(summaryClosed.contains("关闭"))
+        XCTAssertTrue(summaryClosed.contains("休"))
     }
 }

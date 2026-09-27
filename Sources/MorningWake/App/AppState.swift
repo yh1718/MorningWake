@@ -26,10 +26,16 @@ public final class AppState: ObservableObject {
     
     // 工作日作息时刻 (默认 07:30)
     @AppStorage("workdayHour") public var workdayHour: Int = 7 {
-        didSet { reschedule() }
+        didSet {
+            alarmHour = workdayHour
+            reschedule()
+        }
     }
     @AppStorage("workdayMinute") public var workdayMinute: Int = 30 {
-        didSet { reschedule() }
+        didSet {
+            alarmMinute = workdayMinute
+            reschedule()
+        }
     }
     
     // 周末与假期作息时刻 (默认开启 09:30 推迟慢唤，可独立关闭)
@@ -87,10 +93,10 @@ public final class AppState: ObservableObject {
     public var repeatScheduleSummary: String {
         switch repeatSchedule {
         case .smartWorkday:
-            let weekendText = weekendEnabled ? String(format: "%02d:%02d", weekendHour, weekendMinute) : "关闭"
-            return "智能作息 (工作日 \(String(format: "%02d:%02d", workdayHour, workdayMinute)) · 周末 \(weekendText))"
+            let weekendText = weekendEnabled ? String(format: "%02d:%02d", weekendHour, weekendMinute) : "休"
+            return "工作日 \(String(format: "%02d:%02d", workdayHour, workdayMinute)) · 周末 \(weekendText)"
         case .everyday:
-            return "每天 (\(String(format: "%02d:%02d", alarmHour, alarmMinute)))"
+            return "每天 \(String(format: "%02d:%02d", alarmHour, alarmMinute))"
         case .weekdays:
             return "仅工作日 (周一至五)"
         case .weekends:
@@ -351,13 +357,29 @@ public final class AppState: ObservableObject {
         RunLoop.main.add(countdownTimer!, forMode: .common)
     }
     
+    private var lastObservedDayOfYear: Int = Calendar.current.ordinality(of: .day, in: .year, for: Date()) ?? 0
+    
     private func updateCountdown() {
+        let now = Date()
+        
+        // 1. 今日节假日属性始终实时保持最新（无论主开关是否开启）
+        let todayAttr = HolidayManager.shared.getDayAttribute(for: now)
+        self.todayScheduleInfo = todayAttr.badgeText
+        
+        // 2. 跨午夜自动重排期检测（如 00:00 后自动切换新的一天、恢复跳过状态等）
+        let currentDayOfYear = Calendar.current.ordinality(of: .day, in: .year, for: now) ?? 0
+        if currentDayOfYear != lastObservedDayOfYear {
+            lastObservedDayOfYear = currentDayOfYear
+            reschedule()
+            return
+        }
+        
         guard isAlarmEnabled, let next = nextAlarmDate else {
             countdownString = isAlarmEnabled ? "未安排" : "已关闭"
             return
         }
         
-        let diff = next.timeIntervalSince(Date())
+        let diff = next.timeIntervalSince(now)
         if diff <= 0 {
             countdownString = isSnoozing ? "小睡即将结束..." : "即将响铃..."
             return
@@ -375,9 +397,6 @@ public final class AppState: ObservableObject {
         } else {
             countdownString = "\(prefix)\(seconds)秒后"
         }
-        
-        let todayAttr = HolidayManager.shared.getDayAttribute(for: Date())
-        self.todayScheduleInfo = todayAttr.badgeText
     }
     
     private func checkAlarmTrigger() {
