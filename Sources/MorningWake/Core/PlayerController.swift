@@ -93,11 +93,6 @@ public final class PlayerController: ObservableObject {
         let ytRunningApps = NSRunningApplication.runningApplications(withBundleIdentifier: ytBundleId)
         let isAlreadyRunning = !ytRunningApps.isEmpty
         
-        // 核心：无论后台运行还是冷启动，都使用 openApplication(activates = true)
-        // 在 macOS 规范中，对已在后台运行的应用调用 openApplication 会触发系统级 reopen 事件：
-        // 1. 自动将最小化至 Dock 的窗口恢复弹出；
-        // 2. 自动恢复被关闭(红叉)的主窗口；
-        // 3. 将应用置于最前台并激活输入焦点，使 Web 页面 DOM 完全唤醒并就绪响应按键。
         let targetURL: URL? = FileManager.default.fileExists(atPath: appPath) ? appURL : workspace.urlForApplication(withBundleIdentifier: ytBundleId)
         
         guard let validURL = targetURL else {
@@ -105,8 +100,16 @@ public final class PlayerController: ObservableObject {
             return
         }
         
+        // 核心阶梯 1：若已在后台运行（包括最小化至 Dock、隐藏或红叉关闭窗口），立即并发下发第一道原生 play 协议
+        // 通过第二实例 IPC 直接注入应用底层，直接触发应用内置的 $9.playVideo()，无需前台焦点
+        if isAlreadyRunning {
+            sendYouTubeMusicProtocolCommand("play", appURL: validURL)
+        }
+        
+        // 核心阶梯 2：通过 openApplication 触发系统级 reopen 事件
+        // 恢复最小化窗口，解除 Chromium 内核对后台页面的渲染与音频节流 (Unthrottle)
         let config = NSWorkspace.OpenConfiguration()
-        config.activates = true // 强制激活置顶拉起窗口
+        config.activates = true
         
         workspace.openApplication(at: validURL, configuration: config) { [weak self] runningApp, error in
             DispatchQueue.main.async {
@@ -115,26 +118,45 @@ public final class PlayerController: ObservableObject {
                     return
                 }
                 
-                // 确保焦点精准锁定在 YouTube Music 上
-                runningApp?.activate(options: .activateIgnoringOtherApps)
-                
-                // 根据后台运行还是冷启动分配最佳等待延时：
-                // - 后台运行：窗口已在内存，给予 0.8 秒让 Dock 恢复动画与 DOM 渲染就绪
-                // - 冷启动：给予 2.5 秒 Web 页面与登录态加载缓冲
-                let triggerDelay: TimeInterval = isAlreadyRunning ? 0.8 : 2.5
-                
-                DispatchQueue.main.asyncAfter(deadline: .now() + triggerDelay) { [weak self] in
-                    self?.triggerAutoPlayCommand()
+                // 确保窗口解除隐藏并置顶
+                runningApp?.unhide()
+                if #available(macOS 14.0, *) {
+                    runningApp?.activate()
+                } else {
+                    runningApp?.activate(options: .activateIgnoringOtherApps)
                 }
                 
-                // 4.5 秒后安全检测出声状态：若依旧无音频流输出（列表空/离线），自动无缝切入离线和弦备用音
-                DispatchQueue.main.asyncAfter(deadline: .now() + (triggerDelay + 3.0)) { [weak self] in
+                // 根据后台运行还是冷启动分配最佳等待延时：
+                // - 后台运行：窗口已在内存，给予 0.6 秒让 Dock 恢复动画与 DOM 渲染就绪
+                // - 冷启动：给予 2.0 秒 Web 页面与登录态加载缓冲
+                let triggerDelay: TimeInterval = isAlreadyRunning ? 0.6 : 2.0
+                
+                DispatchQueue.main.asyncAfter(deadline: .now() + triggerDelay) { [weak self] in
                     guard let self = self else { return }
-                    if !AudioEngine.shared.isAudioOutputActive() {
-                        print("[PlayerController] YouTube Music 拉起后未检测到音频流输出（可能未就绪/无活跃曲目），启动离线备用音兜底")
+                    // 核心阶梯 3：窗口就绪后，下发第二道幂等 play 协议（绝对防误暂停）
+                    self.sendYouTubeMusicProtocolCommand("play", appURL: validURL)
+                    
+                    // 核心阶梯 4：辅以系统全局媒体键保底，兼顾非 th-ch 版本客户端
+                    self.simulatePlayMediaKey()
+                }
+                
+                // 核心阶梯 5：再延时 1.0 秒执行最后一次幂等播放加固
+                DispatchQueue.main.asyncAfter(deadline: .now() + (triggerDelay + 1.0)) { [weak self] in
+                    self?.sendYouTubeMusicProtocolCommand("play", appURL: validURL)
+                }
+                
+                // 4.5 秒后安全检测出声与存活状态：若应用异常崩溃退出，自动无缝切入离线和弦备用音
+                DispatchQueue.main.asyncAfter(deadline: .now() + (triggerDelay + 2.5)) { [weak self] in
+                    guard let self = self else { return }
+                    let currentYtApps = NSRunningApplication.runningApplications(withBundleIdentifier: self.ytBundleId)
+                    if currentYtApps.isEmpty {
+                        print("[PlayerController] YouTube Music 异常退出，立即切入离线备用音")
+                        self.playFallbackAudio()
+                    } else if !AudioEngine.shared.isAudioOutputActive() {
+                        print("[PlayerController] 未检测到活跃音频流输出，启动离线备用音兜底")
                         self.playFallbackAudio()
                     } else {
-                        print("[PlayerController] YouTube Music 自动播放成功，音频流正常！")
+                        print("[PlayerController] YouTube Music 播放链路闭环完成，音频流正常！")
                     }
                 }
                 
@@ -143,21 +165,31 @@ public final class PlayerController: ObservableObject {
         }
     }
     
-    /// 触发自动播放指令（硬件媒体键 + 空格键双阶智能补偿，确保无需点击直接播放）
-    private func triggerAutoPlayCommand() {
-        // 1. 发送系统硬件媒体播放键 (NX_KEYTYPE_PLAY)
-        simulatePlayMediaKey()
+    /// 向 YouTube Music 下发原生协议指令（如 "play", "pause", "next", "previous"）
+    /// 采用多通道穿透技术：
+    /// 1. 通过后台 Process 启动 CLI 参数传递，直接命中 Electron 的 app.on("second-instance")，直接触发 $9.playVideo()
+    /// 2. 同时使用 NSWorkspace.shared.open(URL) 触发系统协议路由
+    public func sendYouTubeMusicProtocolCommand(_ command: String, appURL: URL? = nil) {
+        let uriString = "youtubemusic://\(command)"
         
-        // 2. 0.4 秒后检查：若系统音频流尚未激活（某些后台场景硬件媒体键未被网页捕获），向当前前台窗口补充发送一次网页通用播放键（空格键 keyCode 49）
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) {
-            if !AudioEngine.shared.isAudioOutputActive() {
-                print("[PlayerController] 媒体键尚未出声，向当前窗口发送空格键激活播放...")
-                let src = CGEventSource(stateID: .hidSystemState)
-                if let down = CGEvent(keyboardEventSource: src, virtualKey: 49, keyDown: true),
-                   let up = CGEvent(keyboardEventSource: src, virtualKey: 49, keyDown: false) {
-                    down.post(tap: .cghidEventTap)
-                    up.post(tap: .cghidEventTap)
-                }
+        // 通道 1：通过 NSWorkspace 打开协议
+        if let url = URL(string: uriString) {
+            NSWorkspace.shared.open(url)
+        }
+        
+        // 通道 2：定位 YouTube Music 二进制可执行文件，通过后台进程直接投递命令行参数
+        let resolvedAppURL = appURL ?? NSWorkspace.shared.urlForApplication(withBundleIdentifier: ytBundleId) ?? URL(fileURLWithPath: "/Applications/YouTube Music.app")
+        let bundle = Bundle(url: resolvedAppURL)
+        let execName = bundle?.infoDictionary?["CFBundleExecutable"] as? String ?? "YouTube Music"
+        let execURL = resolvedAppURL.appendingPathComponent("Contents/MacOS/\(execName)")
+        
+        if FileManager.default.fileExists(atPath: execURL.path) {
+            DispatchQueue.global(qos: .userInitiated).async {
+                let proc = Process()
+                proc.executableURL = execURL
+                proc.arguments = [uriString]
+                try? proc.run()
+                proc.waitUntilExit()
             }
         }
     }
@@ -263,9 +295,16 @@ public final class PlayerController: ObservableObject {
         
         switch target {
         case .youtubeMusic:
+            // 优先下发原生幂等纯暂停协议指令（绝不会像空格键或 Toggle 媒体键那样反向误开播放）
+            sendYouTubeMusicProtocolCommand("pause")
+            
             let ytRunningApps = NSRunningApplication.runningApplications(withBundleIdentifier: ytBundleId)
             if let app = ytRunningApps.first {
-                app.activate(options: .activateIgnoringOtherApps)
+                if #available(macOS 14.0, *) {
+                    app.activate()
+                } else {
+                    app.activate(options: .activateIgnoringOtherApps)
+                }
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak self] in
                     self?.simulatePlayMediaKey()
                 }
