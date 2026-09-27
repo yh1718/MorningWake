@@ -2,15 +2,15 @@ import SwiftUI
 
 public struct MenuBarView: View {
     @ObservedObject var appState = AppState.shared
-    @State private var showQuickEdit: Bool = false
+    @State private var isEditingTime: Bool = false
     
     public init() {}
     
     public var body: some View {
         VStack(spacing: 12) {
             
-            // 顶部栏：Logo、M4定制徽标、状态与主开关
-            HStack {
+            // 1. 顶部栏：应用名称、M4定制标、日历节假日状态与主开关
+            HStack(alignment: .center) {
                 HStack(spacing: 8) {
                     Image(systemName: "sun.horizon.fill")
                         .font(.title2)
@@ -23,14 +23,14 @@ public struct MenuBarView: View {
                         )
                     
                     VStack(alignment: .leading, spacing: 2) {
-                        HStack(spacing: 4) {
+                        HStack(spacing: 5) {
                             Text("MorningWake")
                                 .font(.system(size: 14, weight: .bold))
                             
                             Text("M4 定制")
                                 .font(.system(size: 9, weight: .semibold))
                                 .foregroundColor(.orange)
-                                .padding(.horizontal, 4)
+                                .padding(.horizontal, 5)
                                 .padding(.vertical, 1)
                                 .background(Color.orange.opacity(0.15))
                                 .cornerRadius(4)
@@ -48,228 +48,128 @@ public struct MenuBarView: View {
                     .toggleStyle(.switch)
                     .scaleEffect(0.85)
             }
-            .padding(.horizontal, 14)
+            .padding(.horizontal, 16)
             .padding(.top, 14)
             
-            // 响铃状态控制区（清醒保持播放 / 完全停止 / 小睡）
+            // 2. 响铃控制条（正在响铃时展示）
             if appState.isAlarmRinging {
-                VStack(spacing: 10) {
-                    HStack {
-                        WaveformIndicator(isActive: true)
-                        Text("晨间唤醒进行中...")
-                            .font(.subheadline)
-                            .fontWeight(.semibold)
-                            .foregroundColor(.orange)
-                        Spacer()
-                        Text("\(appState.currentVolumePercent)%")
-                            .font(.caption)
-                            .fontWeight(.bold)
-                            .padding(.horizontal, 6)
-                            .padding(.vertical, 2)
-                            .background(Color.orange.opacity(0.2))
-                            .cornerRadius(4)
-                    }
-                    
-                    VStack(spacing: 6) {
-                        HStack(spacing: 6) {
-                            Button(action: {
-                                appState.keepPlaying()
-                            }) {
-                                Label("清醒 (保持播放)", systemImage: "speaker.wave.2.fill")
-                                    .font(.system(size: 12, weight: .semibold))
-                                    .frame(maxWidth: .infinity)
-                            }
-                            .buttonStyle(.borderedProminent)
-                            .tint(.orange)
-                            .keyboardShortcut(.defaultAction) // 回车快捷键
-                            
-                            Button(action: {
-                                appState.stopAlarm()
-                            }) {
-                                Label("关闭音乐", systemImage: "stop.fill")
-                                    .font(.system(size: 12))
-                                    .frame(maxWidth: .infinity)
-                            }
-                            .buttonStyle(.bordered)
-                            .keyboardShortcut(.cancelAction) // Esc 快捷键
-                        }
-                        
-                        Button(action: {
-                            appState.snooze()
-                        }) {
-                            Label("小睡 \(appState.snoozeDurationMinutes) 分钟", systemImage: "moon.zzz.fill")
-                                .font(.system(size: 12))
-                                .frame(maxWidth: .infinity)
-                        }
-                        .buttonStyle(.bordered)
-                        
-                        if appState.isManualVolumeOverridden {
-                            Text("已检测到外部音量调整，已保持手动音量")
-                                .font(.system(size: 10))
-                                .foregroundColor(.secondary)
-                        }
-                    }
-                }
-                .padding(12)
-                .background(Color.orange.opacity(0.12))
-                .cornerRadius(10)
-                .padding(.horizontal, 12)
+                ringingControlCard
             }
             
-            // 小睡激活状态横幅
+            // 3. 小睡横幅
             if appState.isSnoozing {
-                HStack {
-                    Image(systemName: "moon.zzz.fill")
-                        .foregroundColor(.purple)
-                    
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text("小睡模式开启 (\(appState.snoozeDurationMinutes)分钟)")
-                            .font(.system(size: 12, weight: .semibold))
-                            .foregroundColor(.purple)
-                        Text("闹钟已暂停，将在不久后再次响起")
-                            .font(.system(size: 10))
-                            .foregroundColor(.secondary)
-                    }
-                    
-                    Spacer()
-                    
-                    Button("取消小睡") {
-                        appState.cancelSnooze()
-                    }
-                    .font(.system(size: 11))
-                    .buttonStyle(.bordered)
-                }
-                .padding(10)
-                .background(Color.purple.opacity(0.1))
-                .cornerRadius(8)
-                .padding(.horizontal, 12)
+                snoozeBanner
             }
             
-            // 核心卡片：下次唤醒时间、修改标签与倒计时
-            VStack(spacing: 8) {
-                HStack(alignment: .firstTextBaseline) {
+            // 4. 核心主卡片：优化结构、防截断、大显示面积、就地修改交互
+            VStack(spacing: 10) {
+                // 上排：下次唤醒情境与状态标签 + 倒计时指示
+                HStack(alignment: .center) {
                     HStack(spacing: 6) {
-                        // 点击大数字可快捷呼出修改
-                        Button(action: {
-                            showQuickEdit.toggle()
-                        }) {
-                            Text(appState.nextAlarmDate != nil ? String(format: "%02d:%02d", appState.nextAlarmTargetHour, appState.nextAlarmTargetMinute) : "--:--")
-                                .font(.system(size: 34, weight: .semibold, design: .rounded))
-                                .foregroundColor(.primary)
-                        }
-                        .buttonStyle(.plain)
-                        .help("点击快速修改唤醒时刻")
+                        Text("下次唤醒")
+                            .font(.system(size: 11, weight: .medium))
+                            .foregroundColor(.secondary)
                         
-                        // 状态标签（如“工作日”、“中秋假期”）
                         if !appState.nextAlarmBadge.isEmpty && appState.isAlarmEnabled {
                             Text(appState.nextAlarmBadge)
-                                .font(.system(size: 10, weight: .semibold))
+                                .font(.system(size: 10, weight: .bold))
                                 .foregroundColor(.orange)
-                                .padding(.horizontal, 5)
+                                .padding(.horizontal, 6)
                                 .padding(.vertical, 2)
                                 .background(Color.orange.opacity(0.15))
-                                .cornerRadius(5)
-                        }
-                        
-                        // 明确的【修改】交互标签按钮
-                        Button(action: {
-                            showQuickEdit.toggle()
-                        }) {
-                            HStack(spacing: 2) {
-                                Image(systemName: "pencil")
-                                    .font(.system(size: 8, weight: .semibold))
-                                Text("修改")
-                                    .font(.system(size: 10, weight: .semibold))
-                            }
-                            .foregroundColor(.blue)
-                            .padding(.horizontal, 6)
-                            .padding(.vertical, 2)
-                            .background(Color.blue.opacity(0.12))
-                            .cornerRadius(5)
-                        }
-                        .buttonStyle(.plain)
-                        .help("快速修改唤醒时间与作息")
-                        .popover(isPresented: $showQuickEdit, arrowEdge: .bottom) {
-                            QuickEditView(isPresented: $showQuickEdit)
+                                .cornerRadius(4)
                         }
                     }
                     
                     Spacer()
                     
-                    // 倒计时状态小卡片
                     HStack(spacing: 4) {
                         Circle()
                             .fill(appState.isAlarmEnabled ? (appState.isSnoozing ? Color.purple : (appState.isSkippedToday ? Color.orange : Color.green)) : Color.gray)
                             .frame(width: 6, height: 6)
                         
                         Text(appState.isSkippedToday ? "今日跳过" : appState.countdownString)
-                            .font(.system(size: 11, weight: .medium))
+                            .font(.system(size: 11, weight: .medium, design: .rounded))
                             .foregroundColor(appState.isSnoozing ? .purple : (appState.isSkippedToday ? .orange : .primary))
                     }
                     .padding(.horizontal, 8)
-                    .padding(.vertical, 4)
+                    .padding(.vertical, 3)
                     .background(Color(NSColor.controlBackgroundColor))
                     .cornerRadius(12)
                 }
                 
-                HStack(spacing: 6) {
+                // 中排：大字体唤醒时间（带 fixedSize 绝对防截断）与醒目「修改时间」操作标签
+                HStack(alignment: .center) {
+                    Button(action: {
+                        toggleEditing()
+                    }) {
+                        Text(appState.nextAlarmDate != nil ? String(format: "%02d:%02d", appState.nextAlarmTargetHour, appState.nextAlarmTargetMinute) : "--:--")
+                            .font(.system(size: 38, weight: .bold, design: .rounded))
+                            .foregroundColor(.primary)
+                            .fixedSize()
+                    }
+                    .buttonStyle(.plain)
+                    .help("点击就地修改唤醒时间")
+                    
+                    Spacer()
+                    
+                    Button(action: {
+                        toggleEditing()
+                    }) {
+                        HStack(spacing: 4) {
+                            Image(systemName: isEditingTime ? "chevron.up" : "pencil")
+                                .font(.system(size: 10, weight: .semibold))
+                            Text(isEditingTime ? "收起" : "修改时间")
+                                .font(.system(size: 11, weight: .semibold))
+                        }
+                        .foregroundColor(isEditingTime ? .secondary : .blue)
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 5)
+                        .background(isEditingTime ? Color(NSColor.controlBackgroundColor) : Color.blue.opacity(0.12))
+                        .cornerRadius(6)
+                    }
+                    .buttonStyle(.plain)
+                    .help("就地展开/收起时间修改")
+                }
+                
+                // 下排：作息摘要与当前音源
+                Divider()
+                    .opacity(0.6)
+                
+                HStack {
                     Label(appState.repeatScheduleSummary, systemImage: "repeat")
                         .font(.system(size: 10))
                         .foregroundColor(.secondary)
                         .lineLimit(1)
                     
-                    Text("•")
-                        .font(.system(size: 9))
-                        .foregroundColor(.secondary)
+                    Spacer()
                     
-                    Label(appState.playerTarget == .localFile ? "本地音乐" : (appState.playerTarget == .youtubeMusic ? "YT Music" : (appState.playerTarget == .appleMusic ? "Apple Music" : "自然和弦")), systemImage: "music.note")
+                    Label(playerTargetName, systemImage: "music.note")
                         .font(.system(size: 10))
                         .foregroundColor(.secondary)
-                    
-                    Spacer()
+                        .lineLimit(1)
+                }
+                
+                // 展开区：就地快速修改面板（平滑展开动效，无 Popover 漂移/遮挡风险）
+                if isEditingTime {
+                    inlineEditSection
+                        .transition(.opacity.combined(with: .move(edge: .top)))
                 }
             }
-            .padding(12)
-            .background(Color(NSColor.controlBackgroundColor).opacity(0.6))
-            .cornerRadius(10)
-            .padding(.horizontal, 12)
+            .padding(14)
+            .background(Color(NSColor.controlBackgroundColor).opacity(0.7))
+            .cornerRadius(12)
+            .padding(.horizontal, 14)
             
-            // 试跑状态进度指示
+            // 5. 试跑状态进度指示
             if appState.isTestRunning {
-                VStack(spacing: 6) {
-                    HStack {
-                        WaveformIndicator(isActive: true)
-                        Text("试跑模拟中 (6秒快速预览)...")
-                            .font(.caption)
-                            .foregroundColor(.secondary)
-                        Spacer()
-                        Text("\(appState.currentVolumePercent)%")
-                            .font(.caption)
-                            .bold()
-                    }
-                    
-                    ProgressView(value: Double(appState.currentVolumePercent), total: 100.0)
-                        .tint(.orange)
-                    
-                    Button(role: .cancel, action: {
-                        appState.stopTestRun()
-                    }) {
-                        Text("停止测试")
-                            .font(.caption)
-                            .frame(maxWidth: .infinity)
-                    }
-                    .buttonStyle(.bordered)
-                }
-                .padding(10)
-                .background(Color(NSColor.controlBackgroundColor))
-                .cornerRadius(8)
-                .padding(.horizontal, 12)
+                testRunningCard
             }
             
             Divider()
-                .padding(.horizontal, 12)
+                .padding(.horizontal, 14)
             
-            // 底部操作按钮栏
+            // 6. 底部操作栏
             HStack(spacing: 8) {
                 if !appState.isTestRunning && !appState.isAlarmRinging {
                     Button(action: {
@@ -311,46 +211,36 @@ public struct MenuBarView: View {
                 .buttonStyle(.borderless)
                 .help("退出 MorningWake")
             }
-            .padding(.horizontal, 14)
-            .padding(.bottom, 12)
+            .padding(.horizontal, 16)
+            .padding(.bottom, 14)
         }
-        .frame(width: 320)
+        .frame(width: 360)
+        .animation(.spring(response: 0.35, dampingFraction: 0.82), value: isEditingTime)
     }
-}
-
-// MARK: - 快速修改时间小浮窗
-
-struct QuickEditView: View {
-    @ObservedObject var appState = AppState.shared
-    @Binding var isPresented: Bool
     
-    var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            HStack {
-                Text("修改唤醒时间")
-                    .font(.system(size: 12, weight: .bold))
-                Spacer()
-                Button("完成") {
-                    isPresented = false
-                }
-                .font(.system(size: 11, weight: .semibold))
-                .buttonStyle(.borderless)
-                .foregroundColor(.blue)
-            }
-            
+    // MARK: - 辅助子视图
+    
+    private func toggleEditing() {
+        withAnimation(.spring(response: 0.35, dampingFraction: 0.82)) {
+            isEditingTime.toggle()
+        }
+    }
+    
+    private var inlineEditSection: some View {
+        VStack(spacing: 10) {
             Divider()
             
             if appState.repeatSchedule == .smartWorkday {
-                // 工作日时间快速微调
+                // 工作日时间快速调节
                 HStack {
-                    Label("工作日", systemImage: "briefcase.fill")
+                    Label("工作日作息", systemImage: "briefcase.fill")
                         .font(.system(size: 11, weight: .medium))
                         .foregroundColor(.blue)
                     Spacer()
-                    timePickers(hour: $appState.workdayHour, minute: $appState.workdayMinute)
+                    inlinePicker(hour: $appState.workdayHour, minute: $appState.workdayMinute)
                 }
                 
-                // 周末时间快速微调与开关
+                // 周末与慢晨作息调节与开关
                 HStack {
                     HStack(spacing: 4) {
                         Label("周末慢晨", systemImage: "sun.max.fill")
@@ -362,20 +252,23 @@ struct QuickEditView: View {
                     }
                     Spacer()
                     if appState.weekendEnabled {
-                        timePickers(hour: $appState.weekendHour, minute: $appState.weekendMinute)
+                        inlinePicker(hour: $appState.weekendHour, minute: $appState.weekendMinute)
                     } else {
-                        Text("休息静音")
+                        Text("静音休息")
                             .font(.system(size: 10))
                             .foregroundColor(.secondary)
+                            .padding(.horizontal, 6)
+                            .padding(.vertical, 2)
+                            .background(Color(NSColor.controlBackgroundColor))
+                            .cornerRadius(4)
                     }
                 }
             } else {
-                // 传统响铃时间微调
                 HStack {
                     Text("响铃时间")
                         .font(.system(size: 11, weight: .medium))
                     Spacer()
-                    timePickers(hour: $appState.alarmHour, minute: $appState.alarmMinute)
+                    inlinePicker(hour: $appState.alarmHour, minute: $appState.alarmMinute)
                 }
             }
             
@@ -383,12 +276,11 @@ struct QuickEditView: View {
             
             HStack {
                 Button(action: {
-                    isPresented = false
                     SettingsWindowManager.shared.showSettings()
                 }) {
                     HStack(spacing: 3) {
                         Image(systemName: "gearshape")
-                        Text("偏好设置...")
+                        Text("更多高级排期设置...")
                     }
                     .font(.system(size: 10))
                     .foregroundColor(.secondary)
@@ -397,29 +289,30 @@ struct QuickEditView: View {
                 
                 Spacer()
                 
-                if !appState.todayScheduleInfo.isEmpty {
-                    Text("今日: \(appState.todayScheduleInfo)")
-                        .font(.system(size: 9))
-                        .foregroundColor(.secondary)
+                Button("完成") {
+                    toggleEditing()
                 }
+                .font(.system(size: 11, weight: .semibold))
+                .buttonStyle(.borderedProminent)
+                .controlSize(.small)
             }
         }
-        .padding(12)
-        .frame(width: 250)
+        .padding(.top, 4)
     }
     
-    private func timePickers(hour: Binding<Int>, minute: Binding<Int>) -> some View {
-        HStack(spacing: 2) {
+    private func inlinePicker(hour: Binding<Int>, minute: Binding<Int>) -> some View {
+        HStack(spacing: 4) {
             Picker("", selection: hour) {
                 ForEach(0..<24) { h in
                     Text(String(format: "%02d", h)).tag(h)
                 }
             }
             .labelsHidden()
-            .frame(width: 52)
+            .frame(width: 58)
             
             Text(":")
-                .font(.system(size: 11, weight: .bold))
+                .font(.system(size: 12, weight: .bold))
+                .foregroundColor(.secondary)
             
             Picker("", selection: minute) {
                 ForEach(0..<60) { m in
@@ -427,7 +320,139 @@ struct QuickEditView: View {
                 }
             }
             .labelsHidden()
-            .frame(width: 52)
+            .frame(width: 58)
+        }
+    }
+    
+    private var ringingControlCard: some View {
+        VStack(spacing: 10) {
+            HStack {
+                WaveformIndicator(isActive: true)
+                Text("晨间唤醒进行中...")
+                    .font(.subheadline)
+                    .fontWeight(.semibold)
+                    .foregroundColor(.orange)
+                Spacer()
+                Text("\(appState.currentVolumePercent)%")
+                    .font(.caption)
+                    .fontWeight(.bold)
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 2)
+                    .background(Color.orange.opacity(0.2))
+                    .cornerRadius(4)
+            }
+            
+            VStack(spacing: 6) {
+                HStack(spacing: 6) {
+                    Button(action: {
+                        appState.keepPlaying()
+                    }) {
+                        Label("清醒 (保持播放)", systemImage: "speaker.wave.2.fill")
+                            .font(.system(size: 12, weight: .semibold))
+                            .frame(maxWidth: .infinity)
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .tint(.orange)
+                    .keyboardShortcut(.defaultAction)
+                    
+                    Button(action: {
+                        appState.stopAlarm()
+                    }) {
+                        Label("关闭音乐", systemImage: "stop.fill")
+                            .font(.system(size: 12))
+                            .frame(maxWidth: .infinity)
+                    }
+                    .buttonStyle(.bordered)
+                    .keyboardShortcut(.cancelAction)
+                }
+                
+                Button(action: {
+                    appState.snooze()
+                }) {
+                    Label("小睡 \(appState.snoozeDurationMinutes) 分钟", systemImage: "moon.zzz.fill")
+                        .font(.system(size: 12))
+                        .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.bordered)
+                
+                if appState.isManualVolumeOverridden {
+                    Text("已检测到外部音量调整，已保持手动音量")
+                        .font(.system(size: 10))
+                        .foregroundColor(.secondary)
+                }
+            }
+        }
+        .padding(12)
+        .background(Color.orange.opacity(0.12))
+        .cornerRadius(10)
+        .padding(.horizontal, 14)
+    }
+    
+    private var snoozeBanner: some View {
+        HStack {
+            Image(systemName: "moon.zzz.fill")
+                .foregroundColor(.purple)
+            
+            VStack(alignment: .leading, spacing: 2) {
+                Text("小睡模式开启 (\(appState.snoozeDurationMinutes)分钟)")
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundColor(.purple)
+                Text("闹钟已暂停，将在不久后再次响起")
+                    .font(.system(size: 10))
+                    .foregroundColor(.secondary)
+            }
+            
+            Spacer()
+            
+            Button("取消小睡") {
+                appState.cancelSnooze()
+            }
+            .font(.system(size: 11))
+            .buttonStyle(.bordered)
+        }
+        .padding(10)
+        .background(Color.purple.opacity(0.1))
+        .cornerRadius(8)
+        .padding(.horizontal, 14)
+    }
+    
+    private var testRunningCard: some View {
+        VStack(spacing: 6) {
+            HStack {
+                WaveformIndicator(isActive: true)
+                Text("试跑模拟中 (6秒快速预览)...")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+                Spacer()
+                Text("\(appState.currentVolumePercent)%")
+                    .font(.caption)
+                    .bold()
+            }
+            
+            ProgressView(value: Double(appState.currentVolumePercent), total: 100.0)
+                .tint(.orange)
+            
+            Button(role: .cancel, action: {
+                appState.stopTestRun()
+            }) {
+                Text("停止测试")
+                    .font(.caption)
+                    .frame(maxWidth: .infinity)
+            }
+            .buttonStyle(.bordered)
+        }
+        .padding(10)
+        .background(Color(NSColor.controlBackgroundColor))
+        .cornerRadius(8)
+        .padding(.horizontal, 14)
+    }
+    
+    private var playerTargetName: String {
+        switch appState.playerTarget {
+        case .localFile: return "本地音乐"
+        case .youtubeMusic: return "YT Music"
+        case .appleMusic: return "Apple Music"
+        case .fallbackOnly: return "自然和弦"
         }
     }
 }
