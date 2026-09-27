@@ -384,4 +384,19 @@ public final class AudioEngine: ObservableObject {
         fadeTimer = nil
         isFading = false
     }
+    
+    /// 检测当前默认输出设备是否有音频流正在运行（即是否有应用正在播放声音）
+    public func isAudioOutputActive() -> Bool {
+        guard let devID = getDefaultOutputDeviceID(), devID != kAudioDeviceUnknown else { return false }
+        
+        var isRunning: UInt32 = 0
+        var size = UInt32(MemoryLayout<UInt32>.size)
+        var address = AudioObjectPropertyAddress(
+            mSelector: kAudioDevicePropertyDeviceIsRunningSomewhere,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain
+        )
+        let status = AudioObjectGetPropertyData(devID, &address, 0, nil, &size, &isRunning)
+        return status == noErr && isRunning != 0
+    }
 }

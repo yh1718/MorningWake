@@ -86,19 +86,52 @@ public final class PlayerController: ObservableObject {
     }
     
     private func launchYouTubeMusic(completion: @escaping (Bool) -> Void) {
+        let ytRunningApps = NSRunningApplication.runningApplications(withBundleIdentifier: ytBundleId)
+        
+        // 场景 A：YouTube Music 已处于打开运行状态 (针对用户提问的实际场景)
+        if let existingApp = ytRunningApps.first {
+            print("[PlayerController] 检测到 YouTube Music 处于打开运行状态 (PID: \(existingApp.processIdentifier))，激活焦点并启动播放...")
+            
+            // 激活应用，确保音频与媒体按键焦点准确落在 YouTube Music 身上，防止被前台其他应用截获
+            existingApp.activate(options: .activateIgnoringOtherApps)
+            
+            // 给予 0.4 秒焦点就绪微延迟，发送【单次】播放指令（绝不发送第 2 次 Toggle 避免误暂停）
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { [weak self] in
+                self?.simulatePlayMediaKey()
+            }
+            
+            // 延迟 4.0 秒进行出声与音频流输出检测：如果未发出声音（如列表空或断网），自动无缝切入离线备用音
+            DispatchQueue.main.asyncAfter(deadline: .now() + 4.0) { [weak self] in
+                guard let self = self else { return }
+                let isActive = AudioEngine.shared.isAudioOutputActive()
+                if !isActive {
+                    print("[PlayerController] YouTube Music 打开但未检测到音频流输出（可能未就绪/无活跃曲目），启动离线备用音")
+                    self.playFallbackAudio()
+                } else {
+                    print("[PlayerController] YouTube Music 音频流输出正常！")
+                }
+            }
+            
+            completion(true)
+            return
+        }
+        
+        // 场景 B：YouTube Music 未运行（冷启动）
         let appPath = "/Applications/YouTube Music.app"
         let workspace = NSWorkspace.shared
         let appURL = URL(fileURLWithPath: appPath)
         
-        let handleLaunchSuccess: () -> Void = { [weak self] in
-            // 阶段 1：2 秒后首次触发播放按键
-            DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) {
+        let handleColdLaunchSuccess: () -> Void = { [weak self] in
+            // 冷启动给予 2.5 秒 Web 页面渲染与音频上下文初始化缓冲，发送单次播放按键
+            DispatchQueue.main.asyncAfter(deadline: .now() + 2.5) {
                 self?.simulatePlayMediaKey()
             }
-            // 阶段 2：针对偶发性冷启动缓慢，5 秒后二次确认触发
-            DispatchQueue.main.asyncAfter(deadline: .now() + 5.0) {
-                if !(self?.fallbackAudioPlayer?.isPlaying ?? false) {
-                    self?.simulatePlayMediaKey()
+            // 5 秒后安全检测出声状态
+            DispatchQueue.main.asyncAfter(deadline: .now() + 5.0) { [weak self] in
+                guard let self = self else { return }
+                if !AudioEngine.shared.isAudioOutputActive() {
+                    print("[PlayerController] 冷启动 5 秒未检测到音频流，自动回退备用唤醒音")
+                    self.playFallbackAudio()
                 }
             }
             completion(true)
@@ -106,12 +139,12 @@ public final class PlayerController: ObservableObject {
         
         if FileManager.default.fileExists(atPath: appPath) {
             let config = NSWorkspace.OpenConfiguration()
-            config.activates = false
+            config.activates = true
             
             workspace.openApplication(at: appURL, configuration: config) { _, error in
                 DispatchQueue.main.async {
                     if error == nil {
-                        handleLaunchSuccess()
+                        handleColdLaunchSuccess()
                     } else {
                         completion(false)
                     }
@@ -119,11 +152,11 @@ public final class PlayerController: ObservableObject {
             }
         } else if let targetURL = workspace.urlForApplication(withBundleIdentifier: ytBundleId) {
             let config = NSWorkspace.OpenConfiguration()
-            config.activates = false
+            config.activates = true
             workspace.openApplication(at: targetURL, configuration: config) { _, err in
                 DispatchQueue.main.async {
                     if err == nil {
-                        handleLaunchSuccess()
+                        handleColdLaunchSuccess()
                     } else {
                         completion(false)
                     }
@@ -235,16 +268,13 @@ public final class PlayerController: ObservableObject {
         
         switch target {
         case .youtubeMusic:
-            let script = """
-            if application "YouTube Music" is running then
-                tell application "YouTube Music" to pause
-            end if
-            """
-            var err: NSDictionary?
-            if let appleScript = NSAppleScript(source: script) {
-                appleScript.executeAndReturnError(&err)
-            }
-            if err != nil {
+            let ytRunningApps = NSRunningApplication.runningApplications(withBundleIdentifier: ytBundleId)
+            if let app = ytRunningApps.first {
+                app.activate(options: .activateIgnoringOtherApps)
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak self] in
+                    self?.simulatePlayMediaKey()
+                }
+            } else {
                 simulatePlayMediaKey()
             }
             
