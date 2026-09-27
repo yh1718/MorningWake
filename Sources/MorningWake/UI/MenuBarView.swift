@@ -3,13 +3,14 @@ import SwiftUI
 public struct MenuBarView: View {
     @ObservedObject var appState = AppState.shared
     @State private var isEditingTime: Bool = false
+    @State private var selectedScheduleTab: Int = 0 // 0: 工作日, 1: 周末慢晨
     
     public init() {}
     
     public var body: some View {
         VStack(spacing: 12) {
             
-            // 1. 顶部栏：应用名称、M4定制标、日历节假日状态与主开关
+            // 1. 顶部栏：应用名称、M4定制标、日历节假日状态与整体就绪指示
             HStack(alignment: .center) {
                 HStack(spacing: 8) {
                     Image(systemName: "sun.horizon.fill")
@@ -36,7 +37,7 @@ public struct MenuBarView: View {
                                 .cornerRadius(4)
                         }
                         
-                        Text(appState.isAlarmEnabled ? (appState.isSnoozing ? "小睡进行中" : (appState.isSkippedToday ? "今日已跳过" : (appState.todayScheduleInfo.isEmpty ? "Mac mini 唤醒已就绪" : "今天 · \(appState.todayScheduleInfo)"))) : "已暂停")
+                        Text(appState.isAlarmEnabled ? (appState.isSnoozing ? "小睡进行中" : (appState.isSkippedToday ? "今日已跳过" : (appState.todayScheduleInfo.isEmpty ? "Mac mini 唤醒已就绪" : "今天 · \(appState.todayScheduleInfo)"))) : "闹钟已暂停")
                             .font(.system(size: 11))
                             .foregroundColor(appState.isSnoozing ? .purple : (appState.isSkippedToday ? .orange : .secondary))
                     }
@@ -44,9 +45,19 @@ public struct MenuBarView: View {
                 
                 Spacer()
                 
-                Toggle("", isOn: $appState.isAlarmEnabled)
-                    .toggleStyle(.switch)
-                    .scaleEffect(0.85)
+                // 顶部状态指示胶囊
+                HStack(spacing: 4) {
+                    Circle()
+                        .fill(appState.isAlarmEnabled ? (appState.isSnoozing ? Color.purple : (appState.isSkippedToday ? Color.orange : Color.green)) : Color.gray)
+                        .frame(width: 6, height: 6)
+                    Text(appState.isAlarmEnabled ? (appState.isSkippedToday ? "已跳过" : "定时中") : "已停用")
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundColor(.secondary)
+                }
+                .padding(.horizontal, 7)
+                .padding(.vertical, 3)
+                .background(Color(NSColor.controlBackgroundColor))
+                .cornerRadius(10)
             }
             .padding(.horizontal, 16)
             .padding(.top, 14)
@@ -61,9 +72,9 @@ public struct MenuBarView: View {
                 snoozeBanner
             }
             
-            // 4. 核心主卡片：优化结构、防截断、大显示面积、就地修改交互
-            VStack(spacing: 10) {
-                // 上排：下次唤醒的明确日期（今天/明天/周几）+ 标签 + 倒计时指示
+            // 4. 核心主卡片：采用 100% 原汁原味的 iOS 手机闹钟格式与布局
+            VStack(spacing: 11) {
+                // 上排：下次唤醒的具体日期（今天/明天/具体几号）与倒计时提示
                 HStack(alignment: .center) {
                     HStack(spacing: 5) {
                         Text("下次唤醒")
@@ -79,68 +90,69 @@ public struct MenuBarView: View {
                         if !appState.nextAlarmBadge.isEmpty && appState.isAlarmEnabled {
                             Text(appState.nextAlarmBadge)
                                 .font(.system(size: 10, weight: .bold))
-                                .foregroundColor(.orange)
+                                .foregroundColor(appState.nextAlarmBadge == "工作日" ? .blue : .orange)
                                 .padding(.horizontal, 6)
                                 .padding(.vertical, 2)
-                                .background(Color.orange.opacity(0.15))
+                                .background((appState.nextAlarmBadge == "工作日" ? Color.blue : Color.orange).opacity(0.15))
                                 .cornerRadius(4)
                         }
                     }
                     
                     Spacer()
                     
-                    HStack(spacing: 4) {
-                        Circle()
-                            .fill(appState.isAlarmEnabled ? (appState.isSnoozing ? Color.purple : (appState.isSkippedToday ? Color.orange : Color.green)) : Color.gray)
-                            .frame(width: 6, height: 6)
-                        
-                        Text(appState.isSkippedToday ? "今日跳过" : appState.countdownString)
-                            .font(.system(size: 11, weight: .medium, design: .rounded))
-                            .foregroundColor(appState.isSnoozing ? .purple : (appState.isSkippedToday ? .orange : .primary))
+                    // 倒计时胶囊指示
+                    if appState.isAlarmEnabled {
+                        HStack(spacing: 4) {
+                            Circle()
+                                .fill(appState.isSnoozing ? Color.purple : (appState.isSkippedToday ? Color.orange : Color.green))
+                                .frame(width: 6, height: 6)
+                            
+                            Text(appState.isSkippedToday ? "今日跳过" : appState.countdownString)
+                                .font(.system(size: 11, weight: .medium, design: .rounded))
+                                .foregroundColor(appState.isSnoozing ? .purple : (appState.isSkippedToday ? .orange : .primary))
+                        }
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 3)
+                        .background(Color(NSColor.controlBackgroundColor))
+                        .cornerRadius(12)
                     }
-                    .padding(.horizontal, 8)
-                    .padding(.vertical, 3)
-                    .background(Color(NSColor.controlBackgroundColor))
-                    .cornerRadius(12)
                 }
                 
-                // 中排：大字体唤醒时间（带 fixedSize 绝对防截断）与醒目「修改时间」操作标签
+                // 核心行：iOS 闹钟标志性格式 —— 左侧大字号时间 (带上下午) + 右侧 iOS 原生绿色 Switch 开关
                 HStack(alignment: .center) {
                     Button(action: {
                         toggleEditing()
                     }) {
-                        Text(appState.nextAlarmDate != nil ? String(format: "%02d:%02d", appState.nextAlarmTargetHour, appState.nextAlarmTargetMinute) : "--:--")
-                            .font(.system(size: 38, weight: .bold, design: .rounded))
-                            .foregroundColor(.primary)
-                            .fixedSize()
+                        HStack(alignment: .firstTextBaseline, spacing: 6) {
+                            // iOS 风格上下午标识
+                            let targetHour = appState.nextAlarmTargetHour
+                            let periodStr = targetHour < 12 ? "上午" : "下午"
+                            Text(periodStr)
+                                .font(.system(size: 15, weight: .medium))
+                                .foregroundColor(appState.isAlarmEnabled ? .secondary : .secondary.opacity(0.4))
+                            
+                            // iOS 闹钟特有的轻盈大数字 (46pt SF Pro 字体)
+                            Text(appState.nextAlarmDate != nil ? String(format: "%02d:%02d", appState.nextAlarmTargetHour, appState.nextAlarmTargetMinute) : "--:--")
+                                .font(.system(size: 46, weight: .light, design: .default))
+                                .foregroundColor(appState.isAlarmEnabled ? .primary : .secondary.opacity(0.4))
+                                .fixedSize()
+                        }
                     }
                     .buttonStyle(.plain)
-                    .help("点击就地修改唤醒时间")
+                    .help("点击就地编辑闹钟时间")
                     
                     Spacer()
                     
-                    Button(action: {
-                        toggleEditing()
-                    }) {
-                        HStack(spacing: 4) {
-                            Image(systemName: isEditingTime ? "chevron.up" : "pencil")
-                                .font(.system(size: 10, weight: .semibold))
-                            Text(isEditingTime ? "收起" : "修改时间")
-                                .font(.system(size: 11, weight: .semibold))
-                        }
-                        .foregroundColor(isEditingTime ? .secondary : .blue)
-                        .padding(.horizontal, 10)
-                        .padding(.vertical, 5)
-                        .background(isEditingTime ? Color(NSColor.controlBackgroundColor) : Color.blue.opacity(0.12))
-                        .cornerRadius(6)
-                    }
-                    .buttonStyle(.plain)
-                    .help("就地展开/收起时间修改")
+                    // iOS 标志性绿色大开关（紧随时间右侧）
+                    Toggle("", isOn: $appState.isAlarmEnabled)
+                        .toggleStyle(.switch)
+                        .scaleEffect(0.92)
+                        .help("开启或关闭闹钟")
                 }
                 
-                // 智能时间接力提示（例如今天时刻已过，明确提示自动接力明日工作日）
+                // 智能时间接力提示（例如今天时刻已过，明确提示自动接力明日排期）
                 if let notice = appState.scheduleNotice, !notice.isEmpty && appState.isAlarmEnabled {
-                    HStack(spacing: 4) {
+                    HStack(spacing: 5) {
                         Image(systemName: "arrow.triangle.turn.up.right.diamond.fill")
                             .font(.system(size: 9))
                             .foregroundColor(.orange)
@@ -156,7 +168,7 @@ public struct MenuBarView: View {
                     .cornerRadius(6)
                 }
                 
-                // 下排：作息摘要与当前音源
+                // 下排：作息摘要与音源 + iOS 风格展开修改胶囊
                 Divider()
                     .opacity(0.6)
                 
@@ -172,9 +184,27 @@ public struct MenuBarView: View {
                         .font(.system(size: 10))
                         .foregroundColor(.secondary)
                         .lineLimit(1)
+                    
+                    Button(action: {
+                        toggleEditing()
+                    }) {
+                        HStack(spacing: 3) {
+                            Text(isEditingTime ? "收起" : "修改")
+                                .font(.system(size: 10, weight: .semibold))
+                            Image(systemName: isEditingTime ? "chevron.up" : "chevron.down")
+                                .font(.system(size: 8, weight: .bold))
+                        }
+                        .foregroundColor(.blue)
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 3)
+                        .background(Color.blue.opacity(0.12))
+                        .cornerRadius(6)
+                    }
+                    .buttonStyle(.plain)
+                    .help("展开/收起 iOS 闹钟调节面板")
                 }
                 
-                // 展开区：就地快速修改面板（采用紧凑微调器，彻底杜绝下拉大菜单遮挡重叠）
+                // 展开区：iOS 闹钟编辑页专属的双方块大卡片时间选择器与快捷胶囊
                 if isEditingTime {
                     inlineEditSection
                         .transition(.opacity.combined(with: .move(edge: .top)))
@@ -251,49 +281,83 @@ public struct MenuBarView: View {
     }
     
     private var inlineEditSection: some View {
-        VStack(spacing: 10) {
+        VStack(spacing: 12) {
             Divider()
             
             if appState.repeatSchedule == .smartWorkday {
-                // 工作日时间快速调节
-                HStack {
-                    Label("工作日作息", systemImage: "briefcase.fill")
-                        .font(.system(size: 11, weight: .medium))
-                        .foregroundColor(.blue)
-                    Spacer()
-                    TimeStepperView(hour: $appState.workdayHour, minute: $appState.workdayMinute, accentColor: .blue)
+                // iOS 分段切换器：工作日 vs 周末慢晨
+                Picker("", selection: $selectedScheduleTab) {
+                    Text("💼 工作日唤醒").tag(0)
+                    Text("☕ 周末慢晨").tag(1)
                 }
+                .pickerStyle(.segmented)
+                .labelsHidden()
                 
-                // 周末与慢晨作息调节与开关
-                HStack {
-                    HStack(spacing: 4) {
-                        Label("周末慢晨", systemImage: "sun.max.fill")
-                            .font(.system(size: 11, weight: .medium))
-                            .foregroundColor(.orange)
-                        Toggle("", isOn: $appState.weekendEnabled)
-                            .toggleStyle(.switch)
-                            .scaleEffect(0.65)
-                    }
-                    Spacer()
-                    if appState.weekendEnabled {
-                        TimeStepperView(hour: $appState.weekendHour, minute: $appState.weekendMinute, accentColor: .orange)
-                    } else {
-                        Text("静音休息")
+                if selectedScheduleTab == 0 {
+                    // 工作日时间选择器 (iOS 闹钟双方块大卡片 + 快捷增减)
+                    VStack(spacing: 6) {
+                        IOSTimePickerView(
+                            hour: $appState.workdayHour,
+                            minute: $appState.workdayMinute,
+                            accentColor: .blue,
+                            style: .expanded,
+                            showQuickButtons: true
+                        )
+                        
+                        Text("法定工作日及节假日调休上班日准时响铃")
                             .font(.system(size: 10))
                             .foregroundColor(.secondary)
-                            .padding(.horizontal, 6)
-                            .padding(.vertical, 2)
-                            .background(Color(NSColor.controlBackgroundColor))
-                            .cornerRadius(4)
                     }
+                    .padding(.vertical, 4)
+                } else {
+                    // 周末慢晨时间选择器
+                    VStack(spacing: 8) {
+                        HStack {
+                            Label("周末慢晨唤醒", systemImage: "sun.max.fill")
+                                .font(.system(size: 11, weight: .medium))
+                                .foregroundColor(.orange)
+                            Spacer()
+                            Toggle("", isOn: $appState.weekendEnabled)
+                                .toggleStyle(.switch)
+                                .scaleEffect(0.8)
+                        }
+                        .padding(.horizontal, 4)
+                        
+                        if appState.weekendEnabled {
+                            IOSTimePickerView(
+                                hour: $appState.weekendHour,
+                                minute: $appState.weekendMinute,
+                                accentColor: .orange,
+                                style: .expanded,
+                                showQuickButtons: true
+                            )
+                            
+                            Text("法定节假日及周末延迟唤醒，舒缓慢晨")
+                                .font(.system(size: 10))
+                                .foregroundColor(.secondary)
+                        } else {
+                            Text("周末及法定节假日保持静音，不打扰休息")
+                                .font(.system(size: 11))
+                                .foregroundColor(.secondary)
+                                .frame(maxWidth: .infinity, minHeight: 60)
+                                .background(Color(NSColor.controlBackgroundColor).opacity(0.5))
+                                .cornerRadius(8)
+                        }
+                    }
+                    .padding(.vertical, 4)
                 }
             } else {
-                HStack {
-                    Text("响铃时间")
-                        .font(.system(size: 11, weight: .medium))
-                    Spacer()
-                    TimeStepperView(hour: $appState.alarmHour, minute: $appState.alarmMinute, accentColor: .blue)
+                // 单轨固定响铃时间选择器
+                VStack(spacing: 6) {
+                    IOSTimePickerView(
+                        hour: $appState.alarmHour,
+                        minute: $appState.alarmMinute,
+                        accentColor: .blue,
+                        style: .expanded,
+                        showQuickButtons: true
+                    )
                 }
+                .padding(.vertical, 4)
             }
             
             Divider()
