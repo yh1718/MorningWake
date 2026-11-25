@@ -69,7 +69,30 @@ public final class PowerManager {
     // MARK: - Wake Display & Prevent Sleep (点亮显示器与防休眠)
     
     public func wakeDisplayAndPreventSleep() {
-        // 1. 模拟用户活动事件，立刻唤醒黑屏/睡眠中的 Mac mini 外接显示器 (DisplayPort / HDMI)
+        // 1. 若存在 BetterDisplay，下发 DDC 开机唤醒命令（解开软断电熄屏 / Standby 状态）
+        let betterDisplayPath = "/Applications/BetterDisplay.app/Contents/MacOS/BetterDisplay"
+        if FileManager.default.fileExists(atPath: betterDisplayPath) {
+            DispatchQueue.global(qos: .userInteractive).async {
+                let proc = Process()
+                proc.executableURL = URL(fileURLWithPath: betterDisplayPath)
+                var env = ProcessInfo.processInfo.environment
+                env.removeValue(forKey: "ELECTRON_RUN_AS_NODE")
+                proc.environment = env
+                proc.arguments = ["set", "-namelike=Mi", "-ddc", "-vcp=powerMode", "-value=1"]
+                try? proc.run()
+                proc.waitUntilExit()
+            }
+        }
+        
+        // 2. 模拟系统级外部用户活动强交互脉冲唤醒黑屏
+        DispatchQueue.global(qos: .userInteractive).async {
+            let proc = Process()
+            proc.executableURL = URL(fileURLWithPath: "/usr/bin/caffeinate")
+            proc.arguments = ["-u", "-t", "3"]
+            try? proc.run()
+            proc.waitUntilExit()
+        }
+        
         var userActivityID: IOPMAssertionID = 0
         IOPMAssertionDeclareUserActivity(
             "MorningWake.WakeDisplay" as CFString,
@@ -77,7 +100,7 @@ public final class PowerManager {
             &userActivityID
         )
         
-        // 2. 阻止系统进入空闲睡眠
+        // 3. 阻止系统进入空闲睡眠
         if !hasSystemAssertion {
             let reason = "MorningWake 晨间唤醒：音乐播放与音量渐变中" as CFString
             let status = IOPMAssertionCreateWithName(
@@ -89,7 +112,7 @@ public final class PowerManager {
             hasSystemAssertion = (status == kIOReturnSuccess)
         }
         
-        // 3. 阻止显示器休眠灭屏（保持屏幕点亮，展示卡片与自然光照）
+        // 4. 阻止显示器休眠灭屏（保持屏幕点亮，展示卡片与自然光照）
         if !hasDisplayAssertion {
             let reason = "MorningWake 晨间唤醒：屏幕点亮以展示唤醒通知" as CFString
             let status = IOPMAssertionCreateWithName(
@@ -99,6 +122,35 @@ public final class PowerManager {
                 &displayAssertionID
             )
             hasDisplayAssertion = (status == kIOReturnSuccess)
+        }
+    }
+    
+    // MARK: - Standby Keep-Alive (夜间定时器防冻结保活)
+    private var standbyAssertionID: IOPMAssertionID = 0
+    private var hasStandbyAssertion: Bool = false
+    
+    public func enableStandbyKeepAlive() {
+        guard !hasStandbyAssertion else { return }
+        let reason = "MorningWake 晨间排期：后台维持时钟精准检测（允许显示器彻底黑透关闭）" as CFString
+        let status = IOPMAssertionCreateWithName(
+            kIOPMAssertionTypePreventUserIdleSystemSleep as CFString,
+            IOPMAssertionLevel(kIOPMAssertionLevelOn),
+            reason,
+            &standbyAssertionID
+        )
+        hasStandbyAssertion = (status == kIOReturnSuccess)
+    }
+    
+    public func disableStandbyKeepAlive() {
+        guard hasStandbyAssertion else { return }
+        IOPMAssertionRelease(standbyAssertionID)
+        hasStandbyAssertion = false
+    }
+    
+    public func allowDisplaySleepOnly() {
+        if hasDisplayAssertion {
+            IOPMAssertionRelease(displayAssertionID)
+            hasDisplayAssertion = false
         }
     }
     

@@ -78,151 +78,142 @@ public struct IOSTimePickerView: View {
     
     // MARK: - 1. iOS 闹钟编辑页大卡片样式 (Expanded)
     private var expandedPicker: some View {
-        VStack(spacing: 12) {
+        VStack(spacing: 8) {
             // 核心时分双方块大输入卡片
-            HStack(spacing: 12) {
+            HStack(spacing: 10) {
                 // 小时输入卡片
-                VStack(spacing: 4) {
-                    HStack(spacing: 6) {
-                        TextField("", text: $hourText)
-                            .font(.system(size: 28, weight: .semibold, design: .rounded))
-                            .multilineTextAlignment(.center)
-                            .textFieldStyle(.plain)
-                            .focused($focusedField, equals: .hour)
-                            .frame(width: 48, height: 44)
-                            .background(Color(NSColor.textBackgroundColor).opacity(focusedField == .hour ? 0.95 : 0.6))
-                            .cornerRadius(8)
-                            .overlay(
-                                RoundedRectangle(cornerRadius: 8)
-                                    .stroke(focusedField == .hour ? accentColor : Color.clear, lineWidth: 2)
-                            )
-                            .onChange(of: hourText) { val in
-                                handleHourTextChange(val)
-                            }
-                            .onSubmit {
-                                commitHour()
-                                focusedField = .minute
-                            }
-                        
-                        // 垂直上下微调步进按钮
-                        VStack(spacing: 2) {
-                            Button(action: {
-                                incrementHour()
-                            }) {
-                                Image(systemName: "chevron.up")
-                                    .font(.system(size: 10, weight: .bold))
-                                    .foregroundColor(.secondary)
-                                    .frame(width: 20, height: 18)
-                                    .background(Color(NSColor.controlBackgroundColor))
-                                    .cornerRadius(4)
-                            }
-                            .buttonStyle(.plain)
-                            
-                            Button(action: {
-                                decrementHour()
-                            }) {
-                                Image(systemName: "chevron.down")
-                                    .font(.system(size: 10, weight: .bold))
-                                    .foregroundColor(.secondary)
-                                    .frame(width: 20, height: 18)
-                                    .background(Color(NSColor.controlBackgroundColor))
-                                    .cornerRadius(4)
-                            }
-                            .buttonStyle(.plain)
+                HStack(spacing: 5) {
+                    TextField("", text: $hourText, prompt: Text("00"))
+                        .font(.system(size: 26, weight: .semibold, design: .rounded))
+                        .multilineTextAlignment(.center)
+                        .textFieldStyle(.plain)
+                        .focused($focusedField, equals: .hour)
+                        .frame(width: 44, height: 38)
+                        .background(Color(NSColor.textBackgroundColor).opacity(focusedField == .hour ? 0.95 : 0.6))
+                        .cornerRadius(7)
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 7)
+                                .stroke(focusedField == .hour ? accentColor : Color.clear, lineWidth: 2)
+                        )
+                        .onChange(of: hourText) { val in
+                            handleHourTextChange(val)
                         }
-                    }
-                    .padding(6)
-                    .background(Color(NSColor.controlBackgroundColor).opacity(0.8))
-                    .cornerRadius(10)
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 10)
-                            .stroke(focusedField == .hour ? accentColor.opacity(0.8) : Color.secondary.opacity(0.2), lineWidth: 1)
-                    )
+                        .onSubmit {
+                            commitHour()
+                            focusedField = .minute
+                        }
                     
-                    Text("小时 (0~23)")
-                        .font(.system(size: 10, weight: .medium))
-                        .foregroundColor(focusedField == .hour ? accentColor : .secondary)
+                    // 垂直上下微调步进按钮
+                    VStack(spacing: 2) {
+                        Button(action: {
+                            incrementHour()
+                        }) {
+                            Image(systemName: "chevron.up")
+                                .font(.system(size: 9, weight: .bold))
+                                .foregroundColor(.secondary)
+                                .frame(width: 18, height: 16)
+                                .background(Color(NSColor.controlBackgroundColor))
+                                .cornerRadius(3)
+                                .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                        
+                        Button(action: {
+                            decrementHour()
+                        }) {
+                            Image(systemName: "chevron.down")
+                                .font(.system(size: 9, weight: .bold))
+                                .foregroundColor(.secondary)
+                                .frame(width: 18, height: 16)
+                                .background(Color(NSColor.controlBackgroundColor))
+                                .cornerRadius(3)
+                                .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                    }
                 }
+                .padding(4)
+                .background(Color(NSColor.controlBackgroundColor).opacity(0.8))
+                .cornerRadius(9)
+                .overlay(
+                    RoundedRectangle(cornerRadius: 9)
+                        .stroke(focusedField == .hour ? accentColor.opacity(0.8) : Color.secondary.opacity(0.2), lineWidth: 1)
+                )
                 
                 // 冒号分隔符
                 Text(":")
-                    .font(.system(size: 32, weight: .bold, design: .rounded))
+                    .font(.system(size: 26, weight: .bold, design: .rounded))
                     .foregroundColor(.secondary)
-                    .padding(.bottom, 16)
                 
                 // 分钟输入卡片
-                VStack(spacing: 4) {
-                    HStack(spacing: 6) {
-                        TextField("", text: $minuteText)
-                            .font(.system(size: 28, weight: .semibold, design: .rounded))
-                            .multilineTextAlignment(.center)
-                            .textFieldStyle(.plain)
-                            .focused($focusedField, equals: .minute)
-                            .frame(width: 48, height: 44)
-                            .background(Color(NSColor.textBackgroundColor).opacity(focusedField == .minute ? 0.95 : 0.6))
-                            .cornerRadius(8)
-                            .overlay(
-                                RoundedRectangle(cornerRadius: 8)
-                                    .stroke(focusedField == .minute ? accentColor : Color.clear, lineWidth: 2)
-                            )
-                            .onChange(of: minuteText) { val in
-                                handleMinuteTextChange(val)
-                            }
-                            .onSubmit {
-                                commitMinute()
-                                focusedField = nil
-                            }
-                        
-                        // 垂直上下微调步进按钮
-                        VStack(spacing: 2) {
-                            Button(action: {
-                                incrementMinute()
-                            }) {
-                                Image(systemName: "chevron.up")
-                                    .font(.system(size: 10, weight: .bold))
-                                    .foregroundColor(.secondary)
-                                    .frame(width: 20, height: 18)
-                                    .background(Color(NSColor.controlBackgroundColor))
-                                    .cornerRadius(4)
-                            }
-                            .buttonStyle(.plain)
-                            
-                            Button(action: {
-                                decrementMinute()
-                            }) {
-                                Image(systemName: "chevron.down")
-                                    .font(.system(size: 10, weight: .bold))
-                                    .foregroundColor(.secondary)
-                                    .frame(width: 20, height: 18)
-                                    .background(Color(NSColor.controlBackgroundColor))
-                                    .cornerRadius(4)
-                            }
-                            .buttonStyle(.plain)
+                HStack(spacing: 5) {
+                    TextField("", text: $minuteText, prompt: Text("00"))
+                        .font(.system(size: 26, weight: .semibold, design: .rounded))
+                        .multilineTextAlignment(.center)
+                        .textFieldStyle(.plain)
+                        .focused($focusedField, equals: .minute)
+                        .frame(width: 44, height: 38)
+                        .background(Color(NSColor.textBackgroundColor).opacity(focusedField == .minute ? 0.95 : 0.6))
+                        .cornerRadius(7)
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 7)
+                                .stroke(focusedField == .minute ? accentColor : Color.clear, lineWidth: 2)
+                        )
+                        .onChange(of: minuteText) { val in
+                            handleMinuteTextChange(val)
                         }
-                    }
-                    .padding(6)
-                    .background(Color(NSColor.controlBackgroundColor).opacity(0.8))
-                    .cornerRadius(10)
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 10)
-                            .stroke(focusedField == .minute ? accentColor.opacity(0.8) : Color.secondary.opacity(0.2), lineWidth: 1)
-                    )
+                        .onSubmit {
+                            commitMinute()
+                            focusedField = nil
+                        }
                     
-                    Text("分钟 (0~59)")
-                        .font(.system(size: 10, weight: .medium))
-                        .foregroundColor(focusedField == .minute ? accentColor : .secondary)
+                    // 垂直上下微调步进按钮
+                    VStack(spacing: 2) {
+                        Button(action: {
+                            incrementMinute()
+                        }) {
+                            Image(systemName: "chevron.up")
+                                .font(.system(size: 9, weight: .bold))
+                                .foregroundColor(.secondary)
+                                .frame(width: 18, height: 16)
+                                .background(Color(NSColor.controlBackgroundColor))
+                                .cornerRadius(3)
+                                .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                        
+                        Button(action: {
+                            decrementMinute()
+                        }) {
+                            Image(systemName: "chevron.down")
+                                .font(.system(size: 9, weight: .bold))
+                                .foregroundColor(.secondary)
+                                .frame(width: 18, height: 16)
+                                .background(Color(NSColor.controlBackgroundColor))
+                                .cornerRadius(3)
+                                .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                    }
                 }
+                .padding(4)
+                .background(Color(NSColor.controlBackgroundColor).opacity(0.8))
+                .cornerRadius(9)
+                .overlay(
+                    RoundedRectangle(cornerRadius: 9)
+                        .stroke(focusedField == .minute ? accentColor.opacity(0.8) : Color.secondary.opacity(0.2), lineWidth: 1)
+                )
             }
             
             // iOS 快捷增减胶囊按钮组
             if showQuickButtons {
-                HStack(spacing: 8) {
+                HStack(spacing: 6) {
                     quickDeltaButton(delta: -10, title: "-10分")
                     quickDeltaButton(delta: -5, title: "-5分")
                     quickDeltaButton(delta: 5, title: "+5分")
                     quickDeltaButton(delta: 10, title: "+10分")
                 }
-                .padding(.top, 2)
+                .padding(.top, 1)
             }
         }
     }
@@ -241,6 +232,7 @@ public struct IOSTimePickerView: View {
                     RoundedRectangle(cornerRadius: 12)
                         .stroke(Color.secondary.opacity(0.18), lineWidth: 1)
                 )
+                .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
     }
@@ -262,12 +254,12 @@ public struct IOSTimePickerView: View {
         HStack(spacing: 5) {
             // 小时输入单元
             HStack(spacing: 2) {
-                TextField("", text: $hourText)
+                TextField("", text: $hourText, prompt: Text("00"))
                     .font(.system(size: 13, weight: .semibold, design: .rounded))
                     .multilineTextAlignment(.center)
                     .textFieldStyle(.plain)
                     .focused($focusedField, equals: .hour)
-                    .frame(width: 24, alignment: .center)
+                    .frame(width: 28, alignment: .center)
                     .onChange(of: hourText) { val in
                         handleHourTextChange(val)
                     }
@@ -303,12 +295,12 @@ public struct IOSTimePickerView: View {
             
             // 分钟输入单元
             HStack(spacing: 2) {
-                TextField("", text: $minuteText)
+                TextField("", text: $minuteText, prompt: Text("00"))
                     .font(.system(size: 13, weight: .semibold, design: .rounded))
                     .multilineTextAlignment(.center)
                     .textFieldStyle(.plain)
                     .focused($focusedField, equals: .minute)
-                    .frame(width: 24, alignment: .center)
+                    .frame(width: 28, alignment: .center)
                     .onChange(of: minuteText) { val in
                         handleMinuteTextChange(val)
                     }
@@ -357,7 +349,9 @@ public struct IOSTimePickerView: View {
     
     private func handleHourTextChange(_ text: String) {
         let filtered = text.filter { $0.isNumber }
-        let trimmed = String(filtered.prefix(2))
+        // 若在已有 2 位数时用户直接敲击新数字，取最新字符替换旧输入，避免被直接截断丢弃
+        let cleanText = filtered.count > 2 ? String(filtered.suffix(1)) : filtered
+        let trimmed = String(cleanText.prefix(2))
         if trimmed != text {
             hourText = trimmed
         }
@@ -374,7 +368,8 @@ public struct IOSTimePickerView: View {
     
     private func handleMinuteTextChange(_ text: String) {
         let filtered = text.filter { $0.isNumber }
-        let trimmed = String(filtered.prefix(2))
+        let cleanText = filtered.count > 2 ? String(filtered.suffix(1)) : filtered
+        let trimmed = String(cleanText.prefix(2))
         if trimmed != text {
             minuteText = trimmed
         }

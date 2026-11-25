@@ -26,8 +26,17 @@ public enum FadeCurve: String, CaseIterable, Identifiable {
 public struct AudioDeviceInfo: Identifiable, Hashable {
     public let id: AudioDeviceID
     public let name: String
+    public let uid: String
     public let isBuiltIn: Bool
     public let supportsVolumeControl: Bool
+    
+    public init(id: AudioDeviceID, name: String, uid: String = "", isBuiltIn: Bool, supportsVolumeControl: Bool) {
+        self.id = id
+        self.name = name
+        self.uid = uid
+        self.isBuiltIn = isBuiltIn
+        self.supportsVolumeControl = supportsVolumeControl
+    }
     
     public var label: String {
         if isBuiltIn {
@@ -35,7 +44,7 @@ public struct AudioDeviceInfo: Identifiable, Hashable {
         } else if supportsVolumeControl {
             return "\(name) (支持调音)"
         } else {
-            return "\(name) (不支持系统音量调谐)"
+            return "\(name) (外接输出 · 支持软件音量渐变)"
         }
     }
 }
@@ -46,6 +55,16 @@ public final class AudioEngine: ObservableObject {
     @Published public private(set) var isFading: Bool = false
     @Published public private(set) var currentFadingVolume: Float = 0.0
     @Published public private(set) var availableDevices: [AudioDeviceInfo] = []
+    @Published public private(set) var lastVirtualVolume: Float = 0.5
+    
+    // BetterDisplay DDC 硬件音量桥接通道
+    private let betterDisplayPath = "/Applications/BetterDisplay.app/Contents/MacOS/BetterDisplay"
+    private var isBetterDisplayAvailable: Bool {
+        FileManager.default.fileExists(atPath: betterDisplayPath)
+    }
+    private var lastDDCExecutionTime: Date = .distantPast
+    private var lastDDCSetVolume: Float = -1.0
+    private let ddcQueue = DispatchQueue(label: "com.morningwake.ddc", qos: .userInteractive)
     
     private var fadeTimer: Timer?
     private var fadeStartTime: Date?
@@ -136,6 +155,19 @@ public final class AudioEngine: ObservableObject {
                 devName = unmanaged.takeRetainedValue() as String
             }
             
+            // 设备 UID
+            var uidAddress = AudioObjectPropertyAddress(
+                mSelector: kAudioDevicePropertyDeviceUID,
+                mScope: kAudioObjectPropertyScopeGlobal,
+                mElement: kAudioObjectPropertyElementMain
+            )
+            var cfUid: Unmanaged<CFString>?
+            var uidSize = UInt32(MemoryLayout<Unmanaged<CFString>?>.size)
+            var devUid = ""
+            if AudioObjectGetPropertyData(id, &uidAddress, 0, nil, &uidSize, &cfUid) == noErr, let unmanaged = cfUid {
+                devUid = unmanaged.takeRetainedValue() as String
+            }
+            
             // 传输类型判断内置扬声器（或包含 Mac mini 扬声器关键字）
             var transAddress = AudioObjectPropertyAddress(
                 mSelector: kAudioDevicePropertyTransportType,
@@ -159,6 +191,7 @@ public final class AudioEngine: ObservableObject {
             result.append(AudioDeviceInfo(
                 id: id,
                 name: devName,
+                uid: devUid,
                 isBuiltIn: isBuiltIn,
                 supportsVolumeControl: supportsVolume
             ))
@@ -214,29 +247,84 @@ public final class AudioEngine: ObservableObject {
         return status == noErr
     }
     
+    public func getDeviceID(forUID uid: String) -> AudioDeviceID? {
+        refreshAudioDevices()
+        return availableDevices.first(where: { $0.uid == uid })?.id
+    }
+    
+    public func getDeviceID(forName name: String) -> AudioDeviceID? {
+        refreshAudioDevices()
+        return availableDevices.first(where: { $0.name == name || $0.name.localizedCaseInsensitiveContains(name) })?.id
+    }
+    
+    @discardableResult
+    public func switchToDevice(uidOrName: String) -> Bool {
+        refreshAudioDevices()
+        if let dev = availableDevices.first(where: { $0.uid == uidOrName || $0.name == uidOrName || $0.name.localizedCaseInsensitiveContains(uidOrName) }) {
+            print("[AudioEngine] 切换输出设备至: \(dev.name) (ID: \(dev.id), UID: \(dev.uid))")
+            return setDefaultOutputDevice(id: dev.id)
+        }
+        return false
+    }
+    
     @discardableResult
     public func switchToBuiltInSpeaker() -> Bool {
         refreshAudioDevices()
-        // 优先锁定 Mac mini 内置扬声器
-        if let miniSpeaker = availableDevices.first(where: { $0.isBuiltIn && $0.supportsVolumeControl }) {
-            print("[AudioEngine] 锁定 Mac mini 内置扬声器: \(miniSpeaker.name) (ID: \(miniSpeaker.id))")
+        // 优先锁定内置扬声器
+        if let miniSpeaker = availableDevices.first(where: { $0.isBuiltIn }) {
+            print("[AudioEngine] 锁定内置扬声器: \(miniSpeaker.name) (ID: \(miniSpeaker.id))")
             return setDefaultOutputDevice(id: miniSpeaker.id)
         }
         return false
     }
     
-    // 检查当前输出设备，如果遇到如显示器 (DisplayPort) 等不可调设备，自动平滑切回 Mac mini 扬声器
+    // 检查当前输出设备状态，外接显示器/音响通道（DisplayPort/HDMI）通过软件音量协同渐变，不再强行切走设备
     public func ensureSettableOutputDevice() {
         guard let currentID = getDefaultOutputDeviceID() else { return }
         refreshAudioDevices()
-        if let currentInfo = availableDevices.first(where: { $0.id == currentID }), !currentInfo.supportsVolumeControl {
-            print("[AudioEngine] 当前默认音频设备 [\(currentInfo.name)] 不支持系统音量渐变，自动切换为 Mac mini 扬声器")
-            switchToBuiltInSpeaker()
+        if let currentInfo = availableDevices.first(where: { $0.id == currentID }) {
+            if !currentInfo.supportsVolumeControl {
+                print("[AudioEngine] 当前音频输出设备 [\(currentInfo.name)] 为外接输出通道，已启用软件音量协同渐变")
+            }
+        }
+    }
+    
+    public func setDDCVolume(_ volume: Float, force: Bool = false) {
+        guard isBetterDisplayAvailable else { return }
+        let clamped = max(0.0, min(1.0, volume))
+        let now = Date()
+        let timeDiff = now.timeIntervalSince(lastDDCExecutionTime)
+        let volDiff = abs(clamped - lastDDCSetVolume)
+        
+        // 节流机制：非强制更新时，若间隔小于 0.2 秒且音量变化小于 0.02，则跳过中间高频采样
+        if !force && timeDiff < 0.2 && volDiff < 0.02 {
+            return
+        }
+        
+        lastDDCExecutionTime = now
+        lastDDCSetVolume = clamped
+        
+        ddcQueue.async { [weak self] in
+            guard let self = self else { return }
+            let proc = Process()
+            proc.executableURL = URL(fileURLWithPath: self.betterDisplayPath)
+            var env = ProcessInfo.processInfo.environment
+            env.removeValue(forKey: "ELECTRON_RUN_AS_NODE")
+            proc.environment = env
+            proc.arguments = ["set", String(format: "-volume=%.3f", clamped)]
+            try? proc.run()
+            proc.waitUntilExit()
         }
     }
     
     public func getVolume() -> Float {
-        guard let deviceID = getDefaultOutputDeviceID() else { return 0.5 }
+        guard let deviceID = getDefaultOutputDeviceID() else { return lastVirtualVolume }
+        
+        // 若当前设备属于外接显示器/音响通道（不支持原生系统调音），返回最近设置的虚拟/DDC 音量
+        if let devInfo = availableDevices.first(where: { $0.id == deviceID }), !devInfo.supportsVolumeControl {
+            return lastVirtualVolume
+        }
+        
         var volume: Float32 = 0.0
         var propertySize = UInt32(MemoryLayout<Float32>.size)
         var address = AudioObjectPropertyAddress(
@@ -253,27 +341,40 @@ public final class AudioEngine: ObservableObject {
             &propertySize,
             &volume
         )
-        return status == noErr ? volume : 0.5
+        return status == noErr ? volume : lastVirtualVolume
     }
     
-    public func setVolume(_ volume: Float) {
-        guard let deviceID = getDefaultOutputDeviceID() else { return }
-        var vol = max(0.0, min(1.0, volume))
-        let propertySize = UInt32(MemoryLayout<Float32>.size)
-        var address = AudioObjectPropertyAddress(
-            mSelector: kAudioHardwareServiceDeviceProperty_VirtualMainVolume,
-            mScope: kAudioDevicePropertyScopeOutput,
-            mElement: kAudioObjectPropertyElementMain
-        )
+    public func setVolume(_ volume: Float, on deviceID: AudioDeviceID? = nil) {
+        let clamped = max(0.0, min(1.0, volume))
+        self.lastVirtualVolume = clamped
+        guard let targetDeviceID = deviceID ?? getDefaultOutputDeviceID() else { return }
         
-        AudioObjectSetPropertyData(
-            deviceID,
-            &address,
-            0,
-            nil,
-            propertySize,
-            &vol
-        )
+        var isSupported = true
+        if let devInfo = availableDevices.first(where: { $0.id == targetDeviceID }) {
+            isSupported = devInfo.supportsVolumeControl
+        }
+        
+        if isSupported {
+            var vol = clamped
+            let propertySize = UInt32(MemoryLayout<Float32>.size)
+            var address = AudioObjectPropertyAddress(
+                mSelector: kAudioHardwareServiceDeviceProperty_VirtualMainVolume,
+                mScope: kAudioDevicePropertyScopeOutput,
+                mElement: kAudioObjectPropertyElementMain
+            )
+            AudioObjectSetPropertyData(
+                targetDeviceID,
+                &address,
+                0,
+                nil,
+                propertySize,
+                &vol
+            )
+        } else {
+            // 设备不支持系统 CoreAudio 硬件音量控制（如 Mi Monitor / DisplayPort 外接音响通道）
+            // 通过 BetterDisplay DDC/CI 硬件协议直接调节显示器硬件音频输出音量
+            setDDCVolume(clamped)
+        }
     }
     
     public func unmute() {
@@ -324,6 +425,7 @@ public final class AudioEngine: ObservableObject {
         self.isFading = true
         
         self.setVolume(self.startVol)
+        self.setDDCVolume(self.startVol, force: true)
         self.lastAppliedVolume = self.startVol
         self.currentFadingVolume = self.startVol
         onProgress?(self.startVol)
@@ -339,27 +441,32 @@ public final class AudioEngine: ObservableObject {
     private func tickFade() {
         guard let startTime = fadeStartTime else { return }
         
-        let currentSysVol = getVolume()
-        let diff = abs(currentSysVol - lastAppliedVolume)
-        
-        // 容差过滤：单个音量阶梯约为 0.0625。若偏差 > 0.08 且连续 2 个周期或单次 > 0.15，则判定为物理键/用户接管
-        if diff > 0.15 {
-            print("[AudioEngine] 检测到显著外部音量调整 (\(currentSysVol) vs \(lastAppliedVolume))，退出渐变")
-            let intervention = onInterventionCallback
-            stopFade()
-            intervention?()
-            return
-        } else if diff > 0.08 {
-            consecutiveDiscrepancyCount += 1
-            if consecutiveDiscrepancyCount >= 2 {
-                print("[AudioEngine] 连续检测到外部音量干预 (\(currentSysVol) vs \(lastAppliedVolume))，退出渐变")
+        // 仅在当前设备支持硬件主音量控制时，才进行外部物理音量按键干预检测
+        if let currentDevID = getDefaultOutputDeviceID(),
+           let devInfo = availableDevices.first(where: { $0.id == currentDevID }),
+           devInfo.supportsVolumeControl {
+            let currentSysVol = getVolume()
+            let diff = abs(currentSysVol - lastAppliedVolume)
+            
+            // 容差过滤：单个音量阶梯约为 0.0625。若偏差 > 0.08 且连续 2 个周期或单次 > 0.15，则判定为物理键/用户接管
+            if diff > 0.15 {
+                print("[AudioEngine] 检测到显著外部音量调整 (\(currentSysVol) vs \(lastAppliedVolume))，退出渐变")
                 let intervention = onInterventionCallback
                 stopFade()
                 intervention?()
                 return
+            } else if diff > 0.08 {
+                consecutiveDiscrepancyCount += 1
+                if consecutiveDiscrepancyCount >= 2 {
+                    print("[AudioEngine] 连续检测到外部音量干预 (\(currentSysVol) vs \(lastAppliedVolume))，退出渐变")
+                    let intervention = onInterventionCallback
+                    stopFade()
+                    intervention?()
+                    return
+                }
+            } else {
+                consecutiveDiscrepancyCount = 0
             }
-        } else {
-            consecutiveDiscrepancyCount = 0
         }
         
         let elapsed = Date().timeIntervalSince(startTime)
@@ -374,6 +481,7 @@ public final class AudioEngine: ObservableObject {
         onProgressCallback?(newVolume)
         
         if normalizedProgress >= 1.0 {
+            setDDCVolume(targetVol, force: true)
             stopFade()
             onCompleteCallback?()
         }

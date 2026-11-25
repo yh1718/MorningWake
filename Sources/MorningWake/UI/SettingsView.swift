@@ -19,8 +19,8 @@ public struct SettingsView: View {
     public var body: some View {
         VStack(spacing: 0) {
             // 顶栏
-            HStack {
-                VStack(alignment: .leading, spacing: 2) {
+            HStack(alignment: .center) {
+                VStack(alignment: .leading, spacing: 3) {
                     Text("偏好设置")
                         .font(.headline)
                         .fontWeight(.bold)
@@ -30,11 +30,14 @@ public struct SettingsView: View {
                 }
                 Spacer()
                 Button("完成") {
-                    dismiss()
+                    SettingsWindowManager.shared.closeSettings()
                 }
+                .buttonStyle(.borderedProminent)
+                .controlSize(.regular)
                 .keyboardShortcut(.defaultAction)
             }
-            .padding()
+            .padding(.horizontal, 20)
+            .padding(.vertical, 14)
             .background(Color(NSColor.windowBackgroundColor))
             
             Divider()
@@ -42,8 +45,8 @@ public struct SettingsView: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: 16) {
                     
-                    // 1. Mac mini M4 硬件特征与电源状态
-                    GroupBox(label: Label("硬件适配 (Mac mini M4)", systemImage: "cpu.fill")) {
+                    // 1. 硬件特征与电源状态
+                    GroupBox(label: Label("硬件与电源适配 (\(HardwareInfo.shared.chipName.isEmpty ? "Mac" : HardwareInfo.shared.chipName))", systemImage: "cpu.fill")) {
                         VStack(alignment: .leading, spacing: 8) {
                             HStack {
                                 Text("设备芯片")
@@ -71,44 +74,100 @@ public struct SettingsView: View {
                         .padding(8)
                     }
                     
-                    // 2. 音频设备适配（DisplayPort 规避与扬声器锁定）
-                    GroupBox(label: Label("音频路由与设备还原", systemImage: "hifispeaker.2.fill")) {
+                    // 2. 音频设备适配（支持外接音响/Mi Monitor与内置扬声器路由）
+                    GroupBox(label: Label("音频输出路由与设备还原", systemImage: "hifispeaker.2.fill")) {
                         VStack(alignment: .leading, spacing: 10) {
-                            Toggle("响铃时锁定 Mac mini 内置扬声器发声", isOn: $appState.forceBuiltInSpeaker)
-                                .help("强制使用机载扬声器，防止走显示器 DisplayPort 无音量控制或蓝牙耳机截流")
+                            HStack {
+                                Text("响铃输出设备")
+                                Spacer()
+                                Picker("", selection: Binding(
+                                    get: {
+                                        if !appState.targetAudioDevice.isEmpty {
+                                            return appState.targetAudioDevice
+                                        } else if appState.forceBuiltInSpeaker {
+                                            return "builtIn"
+                                        } else {
+                                            return "system"
+                                        }
+                                    },
+                                    set: { newVal in
+                                        if newVal == "system" {
+                                            appState.targetAudioDevice = ""
+                                            appState.forceBuiltInSpeaker = false
+                                        } else if newVal == "builtIn" {
+                                            appState.targetAudioDevice = ""
+                                            appState.forceBuiltInSpeaker = true
+                                        } else {
+                                            appState.targetAudioDevice = newVal
+                                            appState.forceBuiltInSpeaker = false
+                                        }
+                                    }
+                                )) {
+                                    Text("跟随系统当前默认输出").tag("system")
+                                    Text("锁定内置机载扬声器").tag("builtIn")
+                                    ForEach(audioEngine.availableDevices) { dev in
+                                        Text(dev.isBuiltIn ? "\(dev.name) (机载内置)" : "\(dev.name) (外接音响)").tag(dev.name)
+                                    }
+                                }
+                            }
+                            .help("选择闹钟响铃时声音输出的目标设备，支持通过 Mi Monitor 外接音响发声")
                             
                             Toggle("闹钟关闭后自动恢复先前的音频设备", isOn: $appState.restorePreviousDevice)
                                 .help("关闭音乐后自动切回触发前的音频输出（如显示器或耳机），无缝衔接日常使用")
                             
                             Divider()
                             
-                            Text("已侦测到的输出设备:")
+                            Text("已侦测到的硬件输出设备:")
                                 .font(.system(size: 11, weight: .semibold))
                                 .foregroundColor(.secondary)
                             
                             ForEach(audioEngine.availableDevices) { dev in
+                                let isSelected = dev.name == appState.targetAudioDevice || (appState.targetAudioDevice.isEmpty && !appState.forceBuiltInSpeaker && dev.id == audioEngine.getDefaultOutputDeviceID()) || (appState.targetAudioDevice.isEmpty && appState.forceBuiltInSpeaker && dev.isBuiltIn)
                                 HStack {
                                     Image(systemName: dev.isBuiltIn ? "hifispeaker.fill" : (dev.supportsVolumeControl ? "headphones" : "display"))
-                                        .foregroundColor(dev.supportsVolumeControl ? .green : .secondary)
+                                        .foregroundColor(dev.isBuiltIn ? .green : (dev.supportsVolumeControl ? .blue : .purple))
                                     
                                     VStack(alignment: .leading, spacing: 2) {
-                                        Text(dev.name)
-                                            .font(.system(size: 12))
-                                        Text(dev.isBuiltIn ? "Mac mini 机载硬件 · 支持平滑调音 (首选)" : (dev.supportsVolumeControl ? "支持音量调节" : "DisplayPort/HDMI · 不支持系统调音 (已自动规避)"))
+                                        HStack(spacing: 4) {
+                                            Text(dev.name)
+                                                .font(.system(size: 12, weight: .medium))
+                                            if isSelected {
+                                                Text("当前响铃目标")
+                                                    .font(.system(size: 9, weight: .bold))
+                                                    .foregroundColor(.white)
+                                                    .padding(.horizontal, 4)
+                                                    .padding(.vertical, 1)
+                                                    .background(Color.blue)
+                                                    .cornerRadius(3)
+                                            }
+                                        }
+                                        Text(dev.isBuiltIn ? "机载硬件 · 支持系统硬件调音" : (dev.supportsVolumeControl ? "外接设备 · 支持系统硬件调音" : "外接通道 (已连接音响) · 支持软件音量平滑渐变"))
                                             .font(.system(size: 10))
-                                            .foregroundColor(dev.isBuiltIn ? .green : (dev.supportsVolumeControl ? .secondary : .orange))
+                                            .foregroundColor(.secondary)
                                     }
                                     
                                     Spacer()
                                     
-                                    if dev.isBuiltIn {
-                                        Text("推荐")
-                                            .font(.system(size: 10, weight: .bold))
-                                            .foregroundColor(.green)
-                                            .padding(.horizontal, 4)
-                                            .padding(.vertical, 1)
-                                            .background(Color.green.opacity(0.12))
-                                            .cornerRadius(3)
+                                    if !isSelected {
+                                        Button(action: {
+                                            appState.targetAudioDevice = dev.name
+                                            appState.forceBuiltInSpeaker = dev.isBuiltIn
+                                        }) {
+                                            Text("设为响铃目标")
+                                                .font(.system(size: 11))
+                                        }
+                                        .buttonStyle(.bordered)
+                                    } else {
+                                        HStack(spacing: 3) {
+                                            Image(systemName: "checkmark.circle.fill")
+                                                .foregroundColor(.green)
+                                                .font(.system(size: 12))
+                                            Text("已选定")
+                                                .font(.system(size: 11, weight: .medium))
+                                                .foregroundColor(.secondary)
+                                        }
+                                        .padding(.horizontal, 6)
+                                        .padding(.vertical, 3)
                                     }
                                 }
                                 .padding(.vertical, 2)
@@ -131,7 +190,6 @@ public struct SettingsView: View {
                                         Text(item.rawValue).tag(item)
                                     }
                                 }
-                                .frame(width: 200)
                             }
                             
                             if appState.playerTarget == .localFile {
@@ -182,6 +240,12 @@ public struct SettingsView: View {
                                     .font(.system(size: 10))
                                     .foregroundColor(.secondary)
                             }
+                            
+                            Divider()
+                            
+                            Toggle("主音源启动失败时自动启用离线备用音兜底", isOn: $appState.fallbackSoundEnabled)
+                                .font(.system(size: 11))
+                                .help("若 YouTube Music 或外部音源未安装、无网络或启动超时，自动播放内置自然和弦，100% 确保准时唤醒不睡过头")
                         }
                         .padding(8)
                     }
@@ -190,17 +254,21 @@ public struct SettingsView: View {
                     GroupBox(label: Label("定时与日程", systemImage: "alarm.fill")) {
                         VStack(spacing: 12) {
                             HStack {
-                                Text("作息方案")
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text("作息方案")
+                                    Text(scheduleSubtitleText)
+                                        .font(.system(size: 10))
+                                        .foregroundColor(.secondary)
+                                }
                                 Spacer()
                                 Picker("", selection: Binding(
                                     get: { appState.repeatSchedule },
                                     set: { appState.repeatSchedule = $0 }
                                 )) {
                                     ForEach(RepeatSchedule.allCases) { item in
-                                        Text(item.rawValue).tag(item)
+                                        Text(item.shortTitle).tag(item)
                                     }
                                 }
-                                .frame(width: 240)
                             }
                             
                             Divider()
@@ -293,7 +361,7 @@ public struct SettingsView: View {
                                     HStack {
                                         Image(systemName: "calendar.badge.clock")
                                             .foregroundColor(.orange)
-                                        Text("今日日历状态: \(todayAttr.badgeText) · 下次排期: \(appState.nextAlarmDayTitle) \(appState.nextAlarmDate != nil ? String(format: "%02d:%02d", appState.nextAlarmTargetHour, appState.nextAlarmTargetMinute) : "无") (\(appState.nextAlarmBadge))")
+                                        Text("今日日历状态: \(todayAttr.badgeText) · 下次排期: \(appState.isAlarmEnabled ? "\(appState.nextAlarmDayTitle) \(String(format: "%02d:%02d", appState.displayTargetHour, appState.displayTargetMinute))" : "已暂停") (\(appState.nextAlarmBadge))")
                                             .font(.system(size: 10))
                                             .foregroundColor(.secondary)
                                     }
@@ -422,23 +490,37 @@ public struct SettingsView: View {
                                 }
                                 .frame(width: 160)
                             }
+                            
+                            Divider()
+                            
+                            HStack {
+                                Spacer()
+                                Button(action: {
+                                    if appState.isTestRunning {
+                                        appState.stopTestRun()
+                                    } else {
+                                        appState.startTestRun()
+                                    }
+                                }) {
+                                    Label(appState.isTestRunning ? "停止试跑" : "试跑音量渐变 (8s 预览)", systemImage: appState.isTestRunning ? "stop.fill" : "sparkles")
+                                        .font(.system(size: 11))
+                                }
+                                .buttonStyle(.bordered)
+                                .tint(appState.isTestRunning ? .orange : nil)
+                                .help("模拟 6 秒平滑淡入并在 2 秒后自动复位，用于快速验证唤醒音量与音源")
+                            }
                         }
                         .padding(8)
                     }
                     
-                    // 6. 系统开机项与兜底
-                    GroupBox(label: Label("系统行为与安全兜底", systemImage: "shield.lefthalf.filled")) {
+                    // 6. 系统开机项与权限
+                    GroupBox(label: Label("系统行为与权限", systemImage: "gearshape.fill")) {
                         VStack(spacing: 10) {
                             Toggle("开机自动启动 (SMAppService)", isOn: Binding(
                                 get: { appState.launchAtLogin },
                                 set: { appState.setLaunchAtLogin($0) }
                             ))
                             .help("开机登录后自动常驻菜单栏")
-                            
-                            Divider()
-                            
-                            Toggle("应用启动失败时自动切换离线备用音", isOn: $appState.fallbackSoundEnabled)
-                                .help("避免断网或客户端卡死导致未响铃")
                             
                             Divider()
                             
@@ -466,12 +548,27 @@ public struct SettingsView: View {
                 .padding()
             }
         }
-        .frame(width: 480, height: 650)
+        .frame(width: 520, height: 660)
         .onAppear {
             checkNotificationPermission()
         }
         .onDisappear {
             stopPreview()
+        }
+    }
+    
+    private var scheduleSubtitleText: String {
+        switch appState.repeatSchedule {
+        case .smartWorkday:
+            return "双轨独立时间，中国法定假日休假与调休补班智能调度"
+        case .everyday:
+            return "每天固定同一时间准时响铃唤醒"
+        case .weekdays:
+            return "周一至周五工作日响铃，周末静音休息"
+        case .weekends:
+            return "仅周六日响铃，工作日保持静音"
+        case .custom:
+            return "按下方勾选的指定星期日期准时响铃"
         }
     }
     

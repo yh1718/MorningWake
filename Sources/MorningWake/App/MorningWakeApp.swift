@@ -10,6 +10,12 @@ public final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificat
         center.requestAuthorization(options: [.alert, .sound, .badge]) { _, _ in }
     }
     
+    public func applicationWillTerminate(_ notification: Notification) {
+        PowerManager.shared.allowSleep()
+        PowerManager.shared.disableStandbyKeepAlive()
+        AudioEngine.shared.stopFade()
+    }
+    
     public static func updateNotificationCategory(snoozeMinutes: Int) {
         guard NSClassFromString("XCTestCase") == nil,
               !(Bundle.main.bundleIdentifier?.contains("xctest") ?? false),
@@ -17,7 +23,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificat
         let center = UNUserNotificationCenter.current()
         let keepAction = UNNotificationAction(
             identifier: "ACTION_KEEP",
-            title: "我已清醒 (保持播放)",
+            title: "已醒 (保持播放)",
             options: [.foreground]
         )
         let snoozeAction = UNNotificationAction(
@@ -81,8 +87,8 @@ struct MorningWakeApp: App {
             MenuBarView()
         } label: {
             HStack(spacing: 3) {
-                Image(systemName: appState.isAlarmEnabled ? "sun.horizon.fill" : "sun.horizon")
-                if appState.isAlarmRinging || appState.isTestRunning {
+                Image(systemName: appState.isSnoozing ? "moon.zzz.fill" : (appState.isAlarmEnabled ? "sun.horizon.fill" : "sun.horizon"))
+                if appState.isAlarmRinging || appState.isTestRunning || appState.isManualPlaying {
                     Text("\(appState.currentVolumePercent)%")
                         .font(.system(size: 10, weight: .bold))
                 }

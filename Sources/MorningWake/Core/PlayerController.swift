@@ -20,6 +20,7 @@ public final class PlayerController: ObservableObject {
     private var fallbackAudioPlayer: AVAudioPlayer?
     private var customAudioPlayer: AVAudioPlayer?
     private let ytBundleId = "com.github.th-ch.youtube-music"
+    public private(set) var currentSoftwareVolume: Float = 1.0
     
     private init() {}
     
@@ -31,10 +32,14 @@ public final class PlayerController: ObservableObject {
         forceFallbackIfFailed: Bool = true,
         completion: ((Bool) -> Void)? = nil
     ) {
+        self.isPlaying = true
+        self.activePlayerName = target.rawValue
+        
         switch target {
         case .youtubeMusic:
             launchYouTubeMusic { [weak self] success in
                 guard let self = self else { return }
+                guard self.isPlaying else { return }
                 if success {
                     self.isPlaying = true
                     self.activePlayerName = "YouTube Music"
@@ -51,6 +56,7 @@ public final class PlayerController: ObservableObject {
         case .appleMusic:
             launchAppleMusic { [weak self] success in
                 guard let self = self else { return }
+                guard self.isPlaying else { return }
                 if success {
                     self.isPlaying = true
                     self.activePlayerName = "Apple Music"
@@ -100,64 +106,37 @@ public final class PlayerController: ObservableObject {
             return
         }
         
-        // 核心阶梯 1：若已在后台运行（包括最小化至 Dock、隐藏或红叉关闭窗口），立即并发下发第一道原生 play 协议
-        // 通过第二实例 IPC 直接注入应用底层，直接触发应用内置的 $9.playVideo()，无需前台焦点
+        // 核心阶梯 1：若已在后台运行，立即下发原生 play 协议
         if isAlreadyRunning {
             sendYouTubeMusicProtocolCommand("play", appURL: validURL)
         }
         
-        // 核心阶梯 2：通过 openApplication 触发系统级 reopen 事件
-        // 恢复最小化窗口，解除 Chromium 内核对后台页面的渲染与音频节流 (Unthrottle)
+        // 核心阶梯 2：通过 openApplication 触发系统级 reopen 事件解除后台节流
         let config = NSWorkspace.OpenConfiguration()
-        config.activates = true
+        config.activates = false // 避免破坏性抢占焦点
+        var launchEnv = ProcessInfo.processInfo.environment
+        launchEnv.removeValue(forKey: "ELECTRON_RUN_AS_NODE")
+        config.environment = launchEnv
         
         workspace.openApplication(at: validURL, configuration: config) { [weak self] runningApp, error in
             DispatchQueue.main.async {
-                guard let self = self, error == nil else {
+                guard let self = self, error == nil, self.isPlaying else {
                     completion(false)
                     return
                 }
                 
-                // 确保窗口解除隐藏并置顶
-                runningApp?.unhide()
-                if #available(macOS 14.0, *) {
-                    runningApp?.activate()
-                } else {
-                    runningApp?.activate(options: .activateIgnoringOtherApps)
-                }
-                
-                // 根据后台运行还是冷启动分配最佳等待延时：
-                // - 后台运行：窗口已在内存，给予 0.6 秒让 Dock 恢复动画与 DOM 渲染就绪
-                // - 冷启动：给予 2.0 秒 Web 页面与登录态加载缓冲
                 let triggerDelay: TimeInterval = isAlreadyRunning ? 0.6 : 2.0
                 
                 DispatchQueue.main.asyncAfter(deadline: .now() + triggerDelay) { [weak self] in
-                    guard let self = self else { return }
-                    // 核心阶梯 3：窗口就绪后，下发第二道幂等 play 协议（绝对防误暂停）
+                    guard let self = self, self.isPlaying else { return }
+                    // 核心阶梯 3：窗口就绪后下发第二道幂等 play 协议
                     self.sendYouTubeMusicProtocolCommand("play", appURL: validURL)
-                    
-                    // 核心阶梯 4：辅以系统全局媒体键保底，兼顾非 th-ch 版本客户端
-                    self.simulatePlayMediaKey()
                 }
                 
-                // 核心阶梯 5：再延时 1.0 秒执行最后一次幂等播放加固
+                // 核心阶梯 4：再延时 1.0 秒执行最后一次幂等播放加固
                 DispatchQueue.main.asyncAfter(deadline: .now() + (triggerDelay + 1.0)) { [weak self] in
-                    self?.sendYouTubeMusicProtocolCommand("play", appURL: validURL)
-                }
-                
-                // 4.5 秒后安全检测出声与存活状态：若应用异常崩溃退出，自动无缝切入离线和弦备用音
-                DispatchQueue.main.asyncAfter(deadline: .now() + (triggerDelay + 2.5)) { [weak self] in
-                    guard let self = self else { return }
-                    let currentYtApps = NSRunningApplication.runningApplications(withBundleIdentifier: self.ytBundleId)
-                    if currentYtApps.isEmpty {
-                        print("[PlayerController] YouTube Music 异常退出，立即切入离线备用音")
-                        self.playFallbackAudio()
-                    } else if !AudioEngine.shared.isAudioOutputActive() {
-                        print("[PlayerController] 未检测到活跃音频流输出，启动离线备用音兜底")
-                        self.playFallbackAudio()
-                    } else {
-                        print("[PlayerController] YouTube Music 播放链路闭环完成，音频流正常！")
-                    }
+                    guard let self = self, self.isPlaying else { return }
+                    self.sendYouTubeMusicProtocolCommand("play", appURL: validURL)
                 }
                 
                 completion(true)
@@ -166,31 +145,18 @@ public final class PlayerController: ObservableObject {
     }
     
     /// 向 YouTube Music 下发原生协议指令（如 "play", "pause", "next", "previous"）
-    /// 采用多通道穿透技术：
-    /// 1. 通过后台 Process 启动 CLI 参数传递，直接命中 Electron 的 app.on("second-instance")，直接触发 $9.playVideo()
-    /// 2. 同时使用 NSWorkspace.shared.open(URL) 触发系统协议路由
+    /// 仅通过 LaunchServices 的 URL Scheme 协议派发，避免直接使用 Process 启动二进制导致多开实例
     public func sendYouTubeMusicProtocolCommand(_ command: String, appURL: URL? = nil) {
-        let uriString = "youtubemusic://\(command)"
+        guard let url = URL(string: "youtubemusic://\(command)") else { return }
         
-        // 通道 1：通过 NSWorkspace 打开协议
-        if let url = URL(string: uriString) {
-            NSWorkspace.shared.open(url)
-        }
-        
-        // 通道 2：定位 YouTube Music 二进制可执行文件，通过后台进程直接投递命令行参数
         let resolvedAppURL = appURL ?? NSWorkspace.shared.urlForApplication(withBundleIdentifier: ytBundleId) ?? URL(fileURLWithPath: "/Applications/YouTube Music.app")
-        let bundle = Bundle(url: resolvedAppURL)
-        let execName = bundle?.infoDictionary?["CFBundleExecutable"] as? String ?? "YouTube Music"
-        let execURL = resolvedAppURL.appendingPathComponent("Contents/MacOS/\(execName)")
         
-        if FileManager.default.fileExists(atPath: execURL.path) {
-            DispatchQueue.global(qos: .userInitiated).async {
-                let proc = Process()
-                proc.executableURL = execURL
-                proc.arguments = [uriString]
-                try? proc.run()
-                proc.waitUntilExit()
-            }
+        if FileManager.default.fileExists(atPath: resolvedAppURL.path) {
+            let config = NSWorkspace.OpenConfiguration()
+            config.activates = false
+            NSWorkspace.shared.open([url], withApplicationAt: resolvedAppURL, configuration: config, completionHandler: nil)
+        } else {
+            NSWorkspace.shared.open(url)
         }
     }
     
@@ -230,15 +196,36 @@ public final class PlayerController: ObservableObject {
         postKey(key: 16, down: false)
     }
     
+    // MARK: - Software Volume Fade Support
+    
+    public func setSoftwareVolume(_ volume: Float) {
+        let clamped = max(0.0, min(1.0, volume))
+        self.currentSoftwareVolume = clamped
+        fallbackAudioPlayer?.volume = clamped
+        customAudioPlayer?.volume = clamped
+        
+        // 若当前是 Apple Music，通过 AppleScript 调节音量 (0~100)
+        if activePlayerName == "Apple Music" {
+            let appleMusicVol = Int(clamped * 100)
+            let script = "if application \"Music\" is running then tell application \"Music\" to set sound volume to \(appleMusicVol)"
+            var err: NSDictionary?
+            NSAppleScript(source: script)?.executeAndReturnError(&err)
+        }
+    }
+    
     // MARK: - Fallback Audio
     
-    public func playFallbackAudio() {
+    public func playFallbackAudio(initialVolume: Float? = nil) {
         stopFallbackAudio()
+        if let initVol = initialVolume {
+            self.currentSoftwareVolume = max(0.0, min(1.0, initVol))
+        }
         
         if let soundURL = Bundle.module.url(forResource: "fallback_alarm", withExtension: "wav") {
             do {
                 fallbackAudioPlayer = try AVAudioPlayer(contentsOf: soundURL)
                 fallbackAudioPlayer?.numberOfLoops = -1
+                fallbackAudioPlayer?.volume = currentSoftwareVolume
                 fallbackAudioPlayer?.prepareToPlay()
                 fallbackAudioPlayer?.play()
                 self.isPlaying = true
@@ -261,14 +248,18 @@ public final class PlayerController: ObservableObject {
     
     // MARK: - Custom Audio File Playback
     
-    public func playCustomAudio(filePath: String) -> Bool {
+    public func playCustomAudio(filePath: String, initialVolume: Float? = nil) -> Bool {
         stopFallbackAudio()
         stopCustomAudio()
+        if let initVol = initialVolume {
+            self.currentSoftwareVolume = max(0.0, min(1.0, initVol))
+        }
         
         let url = URL(fileURLWithPath: filePath)
         do {
             let player = try AVAudioPlayer(contentsOf: url)
             player.numberOfLoops = -1
+            player.volume = currentSoftwareVolume
             player.prepareToPlay()
             player.play()
             self.customAudioPlayer = player
@@ -290,27 +281,16 @@ public final class PlayerController: ObservableObject {
     // MARK: - Stop Playback
     
     public func stopPlayback(for target: PlayerTarget = .youtubeMusic) {
+        self.isPlaying = false
+        self.activePlayerName = "已停止"
+        
         stopFallbackAudio()
         stopCustomAudio()
         
         switch target {
         case .youtubeMusic:
-            // 优先下发原生幂等纯暂停协议指令（绝不会像空格键或 Toggle 媒体键那样反向误开播放）
+            // 原生幂等纯暂停协议指令，后台直接注入，不抢占前台焦点且绝不发生 Toggle 误重播
             sendYouTubeMusicProtocolCommand("pause")
-            
-            let ytRunningApps = NSRunningApplication.runningApplications(withBundleIdentifier: ytBundleId)
-            if let app = ytRunningApps.first {
-                if #available(macOS 14.0, *) {
-                    app.activate()
-                } else {
-                    app.activate(options: .activateIgnoringOtherApps)
-                }
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak self] in
-                    self?.simulatePlayMediaKey()
-                }
-            } else {
-                simulatePlayMediaKey()
-            }
             
         case .appleMusic:
             let script = "if application \"Music\" is running then tell application \"Music\" to pause"
@@ -320,8 +300,5 @@ public final class PlayerController: ObservableObject {
         case .localFile, .fallbackOnly:
             break
         }
-        
-        isPlaying = false
-        activePlayerName = "已停止"
     }
 }

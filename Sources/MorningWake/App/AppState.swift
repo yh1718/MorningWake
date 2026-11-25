@@ -13,6 +13,22 @@ public enum RepeatSchedule: String, CaseIterable, Identifiable {
     case custom = "自定义星期"
     
     public var id: String { rawValue }
+    
+    /// 用于菜单和下拉框中简洁呈现的短标题，防止固定宽度窗口下产生 "..." 截断
+    public var shortTitle: String {
+        switch self {
+        case .smartWorkday:
+            return "智能双轨作息 (推荐)"
+        case .everyday:
+            return "每天准时响铃"
+        case .weekdays:
+            return "仅法定工作日"
+        case .weekends:
+            return "仅周末慢晨"
+        case .custom:
+            return "自定义重复星期"
+        }
+    }
 }
 
 public final class AppState: ObservableObject {
@@ -135,8 +151,13 @@ public final class AppState: ObservableObject {
     }
     
     @AppStorage("forceBuiltInSpeaker") public var forceBuiltInSpeaker: Bool = true
-    @AppStorage("fallbackSoundEnabled") public var fallbackSoundEnabled: Bool = true
+    // 指定响铃音频输出设备（"" 表示跟随系统默认或依据 forceBuiltInSpeaker；也可存设备名称或 UID，如 "Mi Monitor"）
+    @AppStorage("targetAudioDevice") public var targetAudioDevice: String = ""
+    @AppStorage("fallbackSoundEnabled") public var fallbackSoundEnabled: Bool = false
     @AppStorage("restorePreviousDevice") public var restorePreviousDevice: Bool = true
+    
+    // 闹钟持续播放设置（已去除 30 分钟超时自动停播限制，保持常态唤醒）
+    @AppStorage("autoStopDurationMinutes") public var autoStopDurationMinutes: Int = 0
     
     // 记录跳过当天的 UNIX 时间戳
     @AppStorage("skippedDayTimestamp") private var skippedDayTimestamp: Double = 0.0
@@ -145,6 +166,7 @@ public final class AppState: ObservableObject {
     
     @Published public var isAlarmRinging: Bool = false
     @Published public var isTestRunning: Bool = false
+    @Published public var isManualPlaying: Bool = false
     @Published public var isSnoozing: Bool = false
     @Published public var isManualVolumeOverridden: Bool = false
     @Published public var nextAlarmDate: Date?
@@ -153,6 +175,48 @@ public final class AppState: ObservableObject {
     @Published public var scheduleNotice: String? = nil
     @Published public var nextAlarmTargetHour: Int = 7
     @Published public var nextAlarmTargetMinute: Int = 30
+    
+    /// 前端界面统一呈现的时间（即使闹钟关闭或未到点，也显示对应设定的主时间，防止出现 "--:--"）
+    public var displayTargetHour: Int {
+        if isAlarmEnabled && nextAlarmDate != nil {
+            return nextAlarmTargetHour
+        }
+        if repeatSchedule == .smartWorkday {
+            let today = Date()
+            let isEffectiveWorkday = HolidayManager.shared.shouldTreatAsWorkday(
+                date: today,
+                smartHoliday: smartHolidayEnabled,
+                smartWorkday: smartWorkdayEnabled
+            )
+            if !isEffectiveWorkday && weekendEnabled {
+                return weekendHour
+            }
+            return workdayHour
+        } else {
+            return alarmHour
+        }
+    }
+    
+    public var displayTargetMinute: Int {
+        if isAlarmEnabled && nextAlarmDate != nil {
+            return nextAlarmTargetMinute
+        }
+        if repeatSchedule == .smartWorkday {
+            let today = Date()
+            let isEffectiveWorkday = HolidayManager.shared.shouldTreatAsWorkday(
+                date: today,
+                smartHoliday: smartHolidayEnabled,
+                smartWorkday: smartWorkdayEnabled
+            )
+            if !isEffectiveWorkday && weekendEnabled {
+                return weekendMinute
+            }
+            return workdayMinute
+        } else {
+            return alarmMinute
+        }
+    }
+    
     @Published public var todayScheduleInfo: String = ""
     @Published public var countdownString: String = "计算中..."
     @Published public var currentVolumePercent: Int = 0
@@ -180,6 +244,7 @@ public final class AppState: ObservableObject {
             UserDefaults.standard.set(true, forKey: "hasMigratedSmartWorkdayV11")
         }
         setupTimers()
+        setupNotificationObservers()
         updateLaunchAtLoginStatus()
         reschedule()
     }
@@ -230,6 +295,7 @@ public final class AppState: ObservableObject {
             scheduleNotice = nil
             isSnoozing = false
             PowerManager.shared.cancelCurrentWake()
+            PowerManager.shared.disableStandbyKeepAlive()
             return
         }
         
@@ -345,6 +411,7 @@ public final class AppState: ObservableObject {
             self.nextAlarmDayTitle = "无排期"
             self.scheduleNotice = nil
             PowerManager.shared.cancelCurrentWake()
+            PowerManager.shared.disableStandbyKeepAlive()
             return
         }
         
@@ -353,6 +420,7 @@ public final class AppState: ObservableObject {
         self.nextAlarmTargetHour = targetHour
         self.nextAlarmTargetMinute = targetMinute
         self.isSnoozing = false
+        PowerManager.shared.enableStandbyKeepAlive()
         
         // 智能时间归属计算：清晰告知用户究竟是「今天」还是「明天」还是「后天」
         let isToday = calendar.isDateInToday(candidateDate)
@@ -405,6 +473,50 @@ public final class AppState: ObservableObject {
             self?.updateCountdown()
         }
         RunLoop.main.add(countdownTimer!, forMode: .common)
+    }
+    
+    private func setupNotificationObservers() {
+        let wsCenter = NSWorkspace.shared.notificationCenter
+        
+        // 1. 系统从休眠中唤醒 (包含硬件定时提前60秒预热唤醒与人工唤醒)
+        wsCenter.addObserver(
+            forName: NSWorkspace.didWakeNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            guard let self = self else { return }
+            print("[AppState] 系统从休眠中唤醒，立即重估状态与排期...")
+            // 延时 0.8s 等待外部显示器/HDMI/DisplayPort 音频总线就绪
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) {
+                AudioEngine.shared.refreshAudioDevices()
+            }
+            self.checkAlarmTrigger()
+            self.reschedule()
+            self.updateCountdown()
+        }
+        
+        // 2. 显示器亮屏 (如外接显示器重新连通)
+        wsCenter.addObserver(
+            forName: NSWorkspace.screensDidWakeNotification,
+            object: nil,
+            queue: .main
+        ) { _ in
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
+                AudioEngine.shared.refreshAudioDevices()
+            }
+        }
+        
+        // 3. 跨午夜自然日变更 (系统 00:00:00 准时下发)
+        NotificationCenter.default.addObserver(
+            forName: .NSCalendarDayChanged,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            guard let self = self else { return }
+            print("[AppState] 跨午夜自然日变更，重新核算今日排期与假期属性...")
+            self.reschedule()
+            self.updateCountdown()
+        }
     }
     
     private var lastObservedDayOfYear: Int = Calendar.current.ordinality(of: .day, in: .year, for: Date()) ?? 0
@@ -464,24 +576,85 @@ public final class AppState: ObservableObject {
         }
     }
     
+    // MARK: - Audio Routing
+    
+    @discardableResult
+    public func applyAudioOutputRouting() -> Bool {
+        self.previousAudioDeviceID = AudioEngine.shared.getDefaultOutputDeviceID()
+        
+        // 1. 若显式指定了目标音频设备（如 "Mi Monitor" 或特定设备 UID）
+        if !targetAudioDevice.isEmpty {
+            if AudioEngine.shared.switchToDevice(uidOrName: targetAudioDevice) {
+                print("[AppState] 音频路由：成功切换至指定设备 [\(targetAudioDevice)]")
+                return true
+            } else {
+                print("[AppState] 音频路由：警告！指定外接设备 [\(targetAudioDevice)] 离线或断电，自动安全降级至机载内置扬声器")
+                AudioEngine.shared.switchToBuiltInSpeaker()
+                return false
+            }
+        }
+        
+        // 2. 若勾选锁定内置扬声器
+        if forceBuiltInSpeaker {
+            print("[AppState] 音频路由：锁定内置扬声器")
+            AudioEngine.shared.switchToBuiltInSpeaker()
+            return true
+        } else {
+            // 检查当前默认设备是否有效
+            if let defaultID = AudioEngine.shared.getDefaultOutputDeviceID(),
+               AudioEngine.shared.availableDevices.contains(where: { $0.id == defaultID }) {
+                print("[AppState] 音频路由：跟随系统当前默认音频设备 (ID: \(defaultID))")
+                return true
+            } else {
+                print("[AppState] 音频路由：当前默认音频设备无效或离线，安全降级至机载内置扬声器")
+                AudioEngine.shared.switchToBuiltInSpeaker()
+                return false
+            }
+        }
+    }
+    
+    public func restoreAudioOutputDeviceIfNeeded() {
+        guard restorePreviousDevice, let originalID = previousAudioDeviceID else { return }
+        let currentID = AudioEngine.shared.getDefaultOutputDeviceID()
+        if currentID != originalID {
+            AudioEngine.shared.refreshAudioDevices()
+            if AudioEngine.shared.availableDevices.contains(where: { $0.id == originalID }) {
+                print("[AppState] 恢复先前音频输出设备 (ID: \(originalID))")
+                AudioEngine.shared.setDefaultOutputDevice(id: originalID)
+                AudioEngine.shared.setVolume(0.20, on: originalID)
+            } else {
+                print("[AppState] 先前音频设备 (ID: \(originalID)) 当前已离线，跳过恢复")
+            }
+        } else {
+            AudioEngine.shared.setVolume(0.20, on: originalID)
+        }
+        self.previousAudioDeviceID = nil
+    }
+    
     // MARK: - Alarm Execution
     
     public func triggerMorningAlarm() {
+        if isManualPlaying {
+            isManualPlaying = false
+        }
+        if isTestRunning {
+            stopTestRun()
+        }
         isAlarmRinging = true
         isSnoozing = false
         isManualVolumeOverridden = false
         skippedDayTimestamp = 0.0
         
-        // 记录触发前的原音频输出设备（以便关闭后能无缝恢复至显示器或耳机）
-        self.previousAudioDeviceID = AudioEngine.shared.getDefaultOutputDeviceID()
-        
         // 点亮外接显示器并保持防休眠
         PowerManager.shared.wakeDisplayAndPreventSleep()
         
-        if forceBuiltInSpeaker {
-            AudioEngine.shared.switchToBuiltInSpeaker()
-        }
+        // 应用音频路由（支持 Mi Monitor、外接音响与内置扬声器，若断电则降级）
+        applyAudioOutputRouting()
         
+        // 设置初始软件音量，避免不可调硬件直接大音量爆响
+        PlayerController.shared.setSoftwareVolume(Float(startVolume))
+        
+        // 播放用户选定的音源（若开启了备用音兜底且主音源启动失败，自动切换离线和弦音兜底）
         PlayerController.shared.startPlayback(
             target: playerTarget,
             customAudioPath: customAudioPath,
@@ -496,6 +669,7 @@ public final class AppState: ObservableObject {
             onProgress: { [weak self] vol in
                 DispatchQueue.main.async {
                     self?.currentVolumePercent = Int(vol * 100)
+                    PlayerController.shared.setSoftwareVolume(vol)
                 }
             },
             onIntervention: { [weak self] in
@@ -511,12 +685,9 @@ public final class AppState: ObservableObject {
         
         sendInteractiveWakeNotification()
         
-        // 30分钟安全熔断保护
+        // 持续播放：已去除 30 分钟自动关闭功能，持续响铃直到用户操作
         autoStopTimer?.invalidate()
-        autoStopTimer = Timer.scheduledTimer(withTimeInterval: 1800.0, repeats: false) { [weak self] _ in
-            print("[AppState] 闹钟触发 30 分钟无应答，安全熔断自动释放")
-            self?.stopAlarm()
-        }
+        autoStopTimer = nil
         
         reschedule()
     }
@@ -531,10 +702,47 @@ public final class AppState: ObservableObject {
         autoStopTimer?.invalidate()
         autoStopTimer = nil
         isAlarmRinging = false
+        isManualPlaying = true
         isSnoozing = false
         isManualVolumeOverridden = false
-        AudioEngine.shared.stopFade()
-        PowerManager.shared.allowSleep()
+        
+        // 点击已醒按钮：将声音平缓渐缓降至 40% 继续播放
+        let currentVol = AudioEngine.shared.getVolume()
+        let targetVol: Float = 0.40
+        if abs(currentVol - targetVol) > 0.02 {
+            AudioEngine.shared.startFade(
+                from: currentVol,
+                to: targetVol,
+                duration: 3.0,
+                curve: .smoothStep,
+                onProgress: { [weak self] vol in
+                    DispatchQueue.main.async {
+                        self?.currentVolumePercent = Int(vol * 100)
+                        PlayerController.shared.setSoftwareVolume(vol)
+                    }
+                },
+                onIntervention: { [weak self] in
+                    DispatchQueue.main.async {
+                        self?.isManualVolumeOverridden = true
+                    }
+                },
+                onComplete: { [weak self] in
+                    DispatchQueue.main.async {
+                        self?.currentVolumePercent = 40
+                        PlayerController.shared.setSoftwareVolume(0.40)
+                        print("[AppState] 已醒模式：平缓降至 40% 音量完成，继续播放中")
+                    }
+                }
+            )
+        } else {
+            AudioEngine.shared.stopFade()
+            AudioEngine.shared.setVolume(targetVol)
+            PlayerController.shared.setSoftwareVolume(targetVol)
+            currentVolumePercent = 40
+        }
+        
+        // 允许外接显示器按系统设定正常休眠息屏，但保持音频/系统活跃直到主动关闭
+        PowerManager.shared.allowDisplaySleepOnly()
         if isNotificationSupportedEnvironment {
             UNUserNotificationCenter.current().removeDeliveredNotifications(withIdentifiers: ["morningwake.ringing"])
         }
@@ -545,6 +753,7 @@ public final class AppState: ObservableObject {
         autoStopTimer?.invalidate()
         autoStopTimer = nil
         isAlarmRinging = false
+        isManualPlaying = false
         isSnoozing = false
         isManualVolumeOverridden = false
         AudioEngine.shared.stopFade()
@@ -554,12 +763,13 @@ public final class AppState: ObservableObject {
             UNUserNotificationCenter.current().removeDeliveredNotifications(withIdentifiers: ["morningwake.ringing"])
         }
         
+        // 点击关闭按钮时，将声音降至 20%
+        AudioEngine.shared.setVolume(0.20)
+        PlayerController.shared.setSoftwareVolume(0.20)
+        currentVolumePercent = 20
+        
         // 恢复触发前的原始音频设备（例如切回显示器或耳机）
-        if restorePreviousDevice, let originalID = previousAudioDeviceID {
-            print("[AppState] 闹钟停止，恢复原有音频输出设备: \(originalID)")
-            AudioEngine.shared.setDefaultOutputDevice(id: originalID)
-            self.previousAudioDeviceID = nil
-        }
+        restoreAudioOutputDeviceIfNeeded()
         
         reschedule()
     }
@@ -571,11 +781,16 @@ public final class AppState: ObservableObject {
         AudioEngine.shared.stopFade()
         PlayerController.shared.stopPlayback(for: playerTarget)
         isAlarmRinging = false
+        isManualPlaying = false
         isManualVolumeOverridden = false
         PowerManager.shared.allowSleep()
         if isNotificationSupportedEnvironment {
             UNUserNotificationCenter.current().removeDeliveredNotifications(withIdentifiers: ["morningwake.ringing"])
         }
+        
+        // 小睡期间同样将声音降低至 20%，避免打扰休息
+        AudioEngine.shared.setVolume(0.20)
+        currentVolumePercent = 20
         
         let snoozeDate = Date().addingTimeInterval(TimeInterval(actualMinutes * 60))
         self.nextAlarmDate = snoozeDate
@@ -602,22 +817,100 @@ public final class AppState: ObservableObject {
         reschedule()
     }
     
-    // MARK: - Test Run (试跑功能)
+    // MARK: - Manual Playback (常态长效播放模式)
     
-    public func startTestRun() {
-        guard !isTestRunning && !isAlarmRinging else { return }
-        isTestRunning = true
-        isManualVolumeOverridden = false
-        originalVolumeBeforeTest = AudioEngine.shared.getVolume()
-        
-        if forceBuiltInSpeaker {
-            AudioEngine.shared.switchToBuiltInSpeaker()
+    public func toggleManualPlayback() {
+        if isManualPlaying {
+            stopManualPlayback()
+        } else {
+            startManualPlayback()
         }
+    }
+    
+    public func startManualPlayback() {
+        guard !isAlarmRinging else { return }
+        if isTestRunning {
+            stopTestRun()
+        }
+        
+        isManualPlaying = true
+        isManualVolumeOverridden = false
+        
+        // 允许外接/内建显示器按系统设定正常息屏，但保持音频/系统活跃不休眠
+        PowerManager.shared.allowDisplaySleepOnly()
+        
+        // 应用音频路由
+        applyAudioOutputRouting()
+        
+        let currentVol = AudioEngine.shared.getVolume()
+        let targetVol = Float(targetVolume)
+        PlayerController.shared.setSoftwareVolume(targetVol)
+        AudioEngine.shared.startFade(
+            from: currentVol,
+            to: targetVol,
+            duration: 1.5,
+            curve: fadeCurve,
+            onProgress: { [weak self] vol in
+                DispatchQueue.main.async {
+                    self?.currentVolumePercent = Int(vol * 100)
+                    PlayerController.shared.setSoftwareVolume(vol)
+                }
+            },
+            onIntervention: { [weak self] in
+                DispatchQueue.main.async {
+                    self?.isManualVolumeOverridden = true
+                }
+            },
+            onComplete: {
+                print("[AppState] 手动播放音量过渡完成")
+            }
+        )
         
         PlayerController.shared.startPlayback(
             target: playerTarget,
             customAudioPath: customAudioPath,
-            forceFallbackIfFailed: true
+            forceFallbackIfFailed: false
+        )
+    }
+    
+    public func stopManualPlayback() {
+        guard isManualPlaying else { return }
+        isManualPlaying = false
+        isManualVolumeOverridden = false
+        AudioEngine.shared.stopFade()
+        PlayerController.shared.stopPlayback(for: playerTarget)
+        PowerManager.shared.allowSleep()
+        
+        // 停止播放时将声音降至 20%
+        AudioEngine.shared.setVolume(0.20)
+        PlayerController.shared.setSoftwareVolume(0.20)
+        currentVolumePercent = 20
+        
+        restoreAudioOutputDeviceIfNeeded()
+    }
+    
+    // MARK: - Test Run (试跑功能 - 8秒快速预览)
+    
+    public func startTestRun() {
+        guard !isTestRunning && !isAlarmRinging else { return }
+        if isManualPlaying {
+            stopManualPlayback()
+        }
+        isTestRunning = true
+        isManualVolumeOverridden = false
+        originalVolumeBeforeTest = AudioEngine.shared.getVolume()
+        
+        // 点亮外接显示器并保持防休眠
+        PowerManager.shared.wakeDisplayAndPreventSleep()
+        
+        // 应用音频路由
+        applyAudioOutputRouting()
+        
+        PlayerController.shared.setSoftwareVolume(Float(startVolume))
+        PlayerController.shared.startPlayback(
+            target: playerTarget,
+            customAudioPath: customAudioPath,
+            forceFallbackIfFailed: false
         )
         
         AudioEngine.shared.startFade(
@@ -628,6 +921,7 @@ public final class AppState: ObservableObject {
             onProgress: { [weak self] vol in
                 DispatchQueue.main.async {
                     self?.currentVolumePercent = Int(vol * 100)
+                    PlayerController.shared.setSoftwareVolume(vol)
                 }
             },
             onIntervention: { [weak self] in
@@ -636,7 +930,7 @@ public final class AppState: ObservableObject {
                 }
             },
             onComplete: { [weak self] in
-                print("[AppState] 试跑淡入完成，2秒后自动复位...")
+                print("[AppState] 试跑淡入完成，2秒后自动复位至20%...")
                 DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) {
                     self?.stopTestRun()
                 }
@@ -650,7 +944,19 @@ public final class AppState: ObservableObject {
         isManualVolumeOverridden = false
         AudioEngine.shared.stopFade()
         PlayerController.shared.stopPlayback(for: playerTarget)
-        AudioEngine.shared.setVolume(originalVolumeBeforeTest)
+        
+        // 试跑完成或点击停止测试时，同样降至 20%，方便用户立即验证关闭降音效果
+        AudioEngine.shared.setVolume(0.20)
+        PlayerController.shared.setSoftwareVolume(0.20)
+        currentVolumePercent = 20
+        
+        restoreAudioOutputDeviceIfNeeded()
+        
+        if restorePreviousDevice, let originalID = previousAudioDeviceID {
+            AudioEngine.shared.setDefaultOutputDevice(id: originalID)
+            self.previousAudioDeviceID = nil
+            AudioEngine.shared.setVolume(0.20, on: originalID)
+        }
     }
     
     // MARK: - Interactive Notification
