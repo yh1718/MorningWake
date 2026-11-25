@@ -37,7 +37,7 @@ public final class PlayerController: ObservableObject {
         
         switch target {
         case .youtubeMusic:
-            launchYouTubeMusic { [weak self] success in
+            launchYouTubeMusic(forceFallback: forceFallbackIfFailed) { [weak self] success in
                 guard let self = self else { return }
                 guard self.isPlaying else { return }
                 if success {
@@ -91,7 +91,7 @@ public final class PlayerController: ObservableObject {
         }
     }
     
-    private func launchYouTubeMusic(completion: @escaping (Bool) -> Void) {
+    private func launchYouTubeMusic(forceFallback: Bool = true, completion: @escaping (Bool) -> Void) {
         let appPath = "/Applications/YouTube Music.app"
         let workspace = NSWorkspace.shared
         let appURL = URL(fileURLWithPath: appPath)
@@ -106,7 +106,7 @@ public final class PlayerController: ObservableObject {
             return
         }
         
-        // 核心阶梯 1：若已在后台运行，立即下发原生 play 协议
+        // 核心阶梯 1：若已在后台运行，立即并发下发第一道原生 play 协议
         if isAlreadyRunning {
             sendYouTubeMusicProtocolCommand("play", appURL: validURL)
         }
@@ -131,12 +131,30 @@ public final class PlayerController: ObservableObject {
                     guard let self = self, self.isPlaying else { return }
                     // 核心阶梯 3：窗口就绪后下发第二道幂等 play 协议
                     self.sendYouTubeMusicProtocolCommand("play", appURL: validURL)
+                    // 核心阶梯 4：补充全局硬件媒体播放键脉冲，双重保险穿透
+                    self.simulatePlayMediaKey()
                 }
                 
-                // 核心阶梯 4：再延时 1.0 秒执行最后一次幂等播放加固
+                // 核心阶梯 5：再延时 1.0 秒执行最后一次幂等播放加固
                 DispatchQueue.main.asyncAfter(deadline: .now() + (triggerDelay + 1.0)) { [weak self] in
                     guard let self = self, self.isPlaying else { return }
                     self.sendYouTubeMusicProtocolCommand("play", appURL: validURL)
+                }
+                
+                // 核心阶梯 6：音频输出流主动自愈看门狗 (Watchdog)
+                // 若拉起 3.5 秒后系统仍未检测到音频输出流（例如网络断开、曲目空载或未能响应），自动无缝切入离线和弦音兜底！
+                DispatchQueue.main.asyncAfter(deadline: .now() + 3.5) { [weak self] in
+                    guard let self = self, self.isPlaying else { return }
+                    if !AudioEngine.shared.isAudioOutputActive() {
+                        if forceFallback {
+                            print("[PlayerController] ⚠️ 警告：YouTube Music 唤醒 3.5 秒后未检测到音频流输出，自动无缝启动离线和弦音兜底！")
+                            self.playFallbackAudio()
+                        } else {
+                            print("[PlayerController] ⚠️ 提示：YouTube Music 未检测到音频输出流，用户未启用备用音兜底")
+                        }
+                    } else {
+                        print("[PlayerController] ✅ YouTube Music 播放成功，已侦测到活跃音频流！")
+                    }
                 }
                 
                 completion(true)
@@ -145,18 +163,40 @@ public final class PlayerController: ObservableObject {
     }
     
     /// 向 YouTube Music 下发原生协议指令（如 "play", "pause", "next", "previous"）
-    /// 仅通过 LaunchServices 的 URL Scheme 协议派发，避免直接使用 Process 启动二进制导致多开实例
+    /// 采用多通道穿透：
+    /// 1. 通过 Process 执行二进制命令行参数传递，直接触发 Electron 的 app.on("second-instance")，下发 songControls[cmd]()
+    /// 2. 同时使用 LaunchServices NSWorkspace.open(URL) 触发系统级协议路由
     public func sendYouTubeMusicProtocolCommand(_ command: String, appURL: URL? = nil) {
-        guard let url = URL(string: "youtubemusic://\(command)") else { return }
+        let uriString = "youtubemusic://\(command)"
         
         let resolvedAppURL = appURL ?? NSWorkspace.shared.urlForApplication(withBundleIdentifier: ytBundleId) ?? URL(fileURLWithPath: "/Applications/YouTube Music.app")
+        let bundle = Bundle(url: resolvedAppURL)
+        let execName = bundle?.infoDictionary?["CFBundleExecutable"] as? String ?? "YouTube Music"
+        let execURL = resolvedAppURL.appendingPathComponent("Contents/MacOS/\(execName)")
         
-        if FileManager.default.fileExists(atPath: resolvedAppURL.path) {
+        // 通道 1：定位二进制，通过 Process 命令行传递直接命中 Electron second-instance
+        if FileManager.default.fileExists(atPath: execURL.path) {
+            DispatchQueue.global(qos: .userInteractive).async {
+                let proc = Process()
+                proc.executableURL = execURL
+                var env = ProcessInfo.processInfo.environment
+                env.removeValue(forKey: "ELECTRON_RUN_AS_NODE")
+                proc.environment = env
+                proc.arguments = [uriString]
+                try? proc.run()
+                proc.waitUntilExit()
+            }
+        }
+        
+        // 通道 2：通过 LaunchServices 打开 URL Scheme
+        if let url = URL(string: uriString) {
             let config = NSWorkspace.OpenConfiguration()
             config.activates = false
-            NSWorkspace.shared.open([url], withApplicationAt: resolvedAppURL, configuration: config, completionHandler: nil)
-        } else {
-            NSWorkspace.shared.open(url)
+            if FileManager.default.fileExists(atPath: resolvedAppURL.path) {
+                NSWorkspace.shared.open([url], withApplicationAt: resolvedAppURL, configuration: config, completionHandler: nil)
+            } else {
+                NSWorkspace.shared.open(url)
+            }
         }
     }
     
@@ -291,6 +331,11 @@ public final class PlayerController: ObservableObject {
         case .youtubeMusic:
             // 原生幂等纯暂停协议指令，后台直接注入，不抢占前台焦点且绝不发生 Toggle 误重播
             sendYouTubeMusicProtocolCommand("pause")
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) { [weak self] in
+                if AudioEngine.shared.isAudioOutputActive() {
+                    self?.simulatePlayMediaKey()
+                }
+            }
             
         case .appleMusic:
             let script = "if application \"Music\" is running then tell application \"Music\" to pause"

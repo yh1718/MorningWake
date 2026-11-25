@@ -432,66 +432,151 @@ public struct MenuBarView: View {
     
     private var ringingControlCard: some View {
         VStack(spacing: 10) {
-            HStack {
-                WaveformIndicator(isActive: true)
-                Text("晨间唤醒进行中...")
-                    .font(.subheadline)
-                    .fontWeight(.semibold)
-                    .foregroundColor(.orange)
+            // 顶栏：波形动画 + 唤醒主标题 + 音量百分比胶囊
+            HStack(alignment: .center) {
+                HStack(spacing: 8) {
+                    WaveformIndicator(isActive: true)
+                    
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("晨间唤醒进行中...")
+                            .font(.system(size: 13, weight: .bold))
+                            .foregroundColor(.orange)
+                        
+                        // 正在播放的音源与输出通道指示
+                        HStack(spacing: 4) {
+                            Image(systemName: "music.note")
+                                .font(.system(size: 8.5))
+                            Text(PlayerController.shared.activePlayerName)
+                                .fontWeight(.medium)
+                            Text("·")
+                            Text(appState.targetAudioDevice.isEmpty ? "内置扬声器" : appState.targetAudioDevice)
+                        }
+                        .font(.system(size: 10))
+                        .foregroundColor(.secondary)
+                    }
+                }
+                
                 Spacer()
-                Text("\(appState.currentVolumePercent)%")
-                    .font(.caption)
-                    .fontWeight(.bold)
-                    .padding(.horizontal, 6)
-                    .padding(.vertical, 2)
-                    .background(Color.orange.opacity(0.2))
-                    .cornerRadius(4)
+                
+                // 实时音量百分比徽标
+                HStack(spacing: 3) {
+                    Image(systemName: "speaker.wave.2.fill")
+                        .font(.system(size: 9))
+                    Text("\(appState.currentVolumePercent)%")
+                        .font(.system(size: 11, weight: .bold, design: .rounded))
+                }
+                .foregroundColor(.orange)
+                .padding(.horizontal, 8)
+                .padding(.vertical, 3.5)
+                .background(Color.orange.opacity(0.18))
+                .cornerRadius(12)
             }
             
-            VStack(spacing: 6) {
-                HStack(spacing: 6) {
+            // 音量渐变进度条 (展示从 startVolume 升至 targetVolume 的平滑进度)
+            ProgressView(value: Double(appState.currentVolumePercent), total: 100.0)
+                .tint(.orange)
+                .scaleEffect(x: 1, y: 0.65)
+                .padding(.vertical, -2)
+            
+            // 操作按钮区：采用高对比度、大圆角与触感清晰的配色
+            VStack(spacing: 7) {
+                HStack(spacing: 8) {
+                    // 核心按钮 1：已醒 (保持播放) —— 晨光橙色高光按钮
                     Button(action: {
                         appState.keepPlaying()
                     }) {
-                        Label("已醒 (保持播放)", systemImage: "speaker.wave.2.fill")
-                            .font(.system(size: 12, weight: .semibold))
-                            .frame(maxWidth: .infinity)
+                        HStack(spacing: 5) {
+                            Image(systemName: "sun.max.fill")
+                                .font(.system(size: 12, weight: .bold))
+                            Text("已醒 (保持播放)")
+                                .font(.system(size: 12, weight: .bold))
+                        }
+                        .foregroundColor(.white)
+                        .frame(maxWidth: .infinity, minHeight: 32)
+                        .background(
+                            LinearGradient(
+                                colors: [Color.orange, Color.orange.opacity(0.88)],
+                                startPoint: .topLeading,
+                                endPoint: .bottomTrailing
+                            )
+                        )
+                        .cornerRadius(8)
                     }
-                    .buttonStyle(.borderedProminent)
-                    .tint(.orange)
+                    .buttonStyle(.plain)
                     .keyboardShortcut(.defaultAction)
-                    .help("确认已醒，声音将平缓渐缓降低至 40% 并继续播放背景音乐")
+                    .help("确认已醒，声音将平缓降至 40% 并继续播放背景音乐")
                     
+                    // 核心按钮 2：关闭音乐 —— 低侵略性中性暗色按钮
                     Button(action: {
                         appState.stopAlarm()
                     }) {
-                        Label("关闭音乐", systemImage: "stop.fill")
-                            .font(.system(size: 12))
-                            .frame(maxWidth: .infinity)
+                        HStack(spacing: 4) {
+                            Image(systemName: "stop.fill")
+                                .font(.system(size: 9, weight: .bold))
+                            Text("关闭音乐")
+                                .font(.system(size: 12, weight: .medium))
+                        }
+                        .foregroundColor(.primary.opacity(0.85))
+                        .frame(maxWidth: .infinity, minHeight: 32)
+                        .background(Color(NSColor.controlBackgroundColor))
+                        .cornerRadius(8)
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 8)
+                                .stroke(Color.secondary.opacity(0.22), lineWidth: 1)
+                        )
                     }
-                    .buttonStyle(.bordered)
+                    .buttonStyle(.plain)
                     .keyboardShortcut(.cancelAction)
+                    .help("完全停止音乐播放并重置音量")
                 }
                 
+                // 次级按钮：小睡胶囊 —— 专属梦境紫配色，横向延展
                 Button(action: {
                     appState.snooze()
                 }) {
-                    Label("小睡 \(appState.snoozeDurationMinutes) 分钟", systemImage: "moon.zzz.fill")
-                        .font(.system(size: 12))
-                        .frame(maxWidth: .infinity)
+                    HStack(spacing: 5) {
+                        Image(systemName: "moon.zzz.fill")
+                            .font(.system(size: 11, weight: .semibold))
+                        Text("小睡 \(appState.snoozeDurationMinutes) 分钟")
+                            .font(.system(size: 11.5, weight: .medium))
+                    }
+                    .foregroundColor(.purple)
+                    .frame(maxWidth: .infinity, minHeight: 28)
+                    .background(Color.purple.opacity(0.12))
+                    .cornerRadius(7)
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 7)
+                            .stroke(Color.purple.opacity(0.24), lineWidth: 1)
+                    )
                 }
-                .buttonStyle(.bordered)
+                .buttonStyle(.plain)
+                .help("暂时静音并在 \(appState.snoozeDurationMinutes) 分钟后再次提醒")
                 
                 if appState.isManualVolumeOverridden {
-                    Text("已检测到外部音量调整，已保持手动音量")
-                        .font(.system(size: 10))
-                        .foregroundColor(.secondary)
+                    HStack(spacing: 4) {
+                        Image(systemName: "hand.raised.fill")
+                            .font(.system(size: 9))
+                        Text("已检测到外部物理调音，已锁定当前音量")
+                            .font(.system(size: 9.5))
+                    }
+                    .foregroundColor(.secondary)
+                    .padding(.top, 1)
                 }
             }
         }
         .padding(12)
-        .background(Color.orange.opacity(0.12))
-        .cornerRadius(10)
+        .background(
+            LinearGradient(
+                colors: [Color.orange.opacity(0.14), Color.orange.opacity(0.06)],
+                startPoint: .topLeading,
+                endPoint: .bottomTrailing
+            )
+        )
+        .cornerRadius(12)
+        .overlay(
+            RoundedRectangle(cornerRadius: 12)
+                .stroke(Color.orange.opacity(0.28), lineWidth: 1)
+        )
         .padding(.horizontal, 14)
     }
     
