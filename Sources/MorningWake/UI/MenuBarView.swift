@@ -2,6 +2,7 @@ import SwiftUI
 
 public struct MenuBarView: View {
     @ObservedObject var appState = AppState.shared
+    @ObservedObject var playerController = PlayerController.shared
     @State private var isEditingTime: Bool = false
     @State private var selectedScheduleTab: Int = 0 // 0: 工作日, 1: 周末慢晨
     @State private var measuredHeight: CGFloat = 0
@@ -446,7 +447,7 @@ public struct MenuBarView: View {
                         HStack(spacing: 4) {
                             Image(systemName: "music.note")
                                 .font(.system(size: 8.5))
-                            Text(PlayerController.shared.activePlayerName)
+                            Text(playerController.activePlayerName)
                                 .fontWeight(.medium)
                             Text("·")
                             Text(appState.targetAudioDevice.isEmpty ? "内置扬声器" : appState.targetAudioDevice)

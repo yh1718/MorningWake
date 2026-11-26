@@ -183,14 +183,23 @@ final class MorningWakeTests: XCTestCase {
     
     func testStopTestRunVolumeReduction() {
         let state = AppState.shared
-        state.isTestRunning = true
-        state.currentVolumePercent = 75
+        let originalVol = AudioEngine.shared.getVolume()
+        let prevPlayerTarget = state.playerTarget
         
-        // 执行停止试跑
+        // 设定已知初始音量并用内置兜底音源启动试跑，验证停止后能准确还原试跑前音量而非强行覆盖为 20%
+        AudioEngine.shared.setVolume(0.45)
+        state.playerTarget = .fallbackOnly
+        state.startTestRun()
+        XCTAssertTrue(state.isTestRunning)
+        
         state.stopTestRun()
         
         XCTAssertFalse(state.isTestRunning)
-        XCTAssertEqual(state.currentVolumePercent, 20, "停止试跑后，音量应降至 20%")
+        XCTAssertEqual(state.currentVolumePercent, 45, accuracy: 2, "停止试跑后应恢复试跑前记录的原始音量 (45%)")
+        
+        // 还原环境
+        state.playerTarget = prevPlayerTarget
+        AudioEngine.shared.setVolume(originalVol)
     }
     
     func testKeepPlayingVolumeFadeTo40() {
@@ -424,5 +433,64 @@ final class MorningWakeTests: XCTestCase {
             )
             XCTAssertFalse(isEffectiveWorkday, "国庆节假期应被判定为非工作日")
         }
+    }
+    
+    func testHolidayDataAvailabilityForYear() {
+        let holidayManager = HolidayManager.shared
+        XCTAssertTrue(holidayManager.hasHolidayData(forYear: 2026), "2026 年节假日数据应内置就绪")
+        XCTAssertFalse(holidayManager.hasHolidayData(forYear: 2099), "未内置的远期年份应准确返回 false")
+    }
+    
+    // MARK: - Lock Screen Volume Stall vs External Intervention Tests
+    
+    func testStalledSystemVolumeDoesNotTriggerExternalIntervention() {
+        // 模拟锁屏状态下系统音量停滞在 0.25 不动，而目标渐变已推进到 0.40
+        let shouldIntervene = AudioEngine.shouldTreatAsExternalIntervention(
+            currentSysVol: 0.25,
+            lastObservedSysVol: 0.25,
+            lastAppliedVolume: 0.40,
+            startVol: 0.20,
+            targetVol: 0.90,
+            lastSetSucceeded: true
+        )
+        XCTAssertFalse(shouldIntervene, "系统音量停滞在原处未动时，不应误判为外部物理调音干预")
+    }
+    
+    func testFailedSetVolumeDoesNotTriggerExternalIntervention() {
+        let shouldIntervene = AudioEngine.shouldTreatAsExternalIntervention(
+            currentSysVol: 0.20,
+            lastObservedSysVol: 0.25,
+            lastAppliedVolume: 0.40,
+            startVol: 0.20,
+            targetVol: 0.90,
+            lastSetSucceeded: false
+        )
+        XCTAssertFalse(shouldIntervene, "底层音量写入返回失败时，不应误判为外部干预")
+    }
+    
+    func testUserLoweringVolumeTriggersExternalIntervention() {
+        // 渐增过程中，用户按物理音量减键把系统音量从 0.35 拉低到 0.25
+        let shouldIntervene = AudioEngine.shouldTreatAsExternalIntervention(
+            currentSysVol: 0.25,
+            lastObservedSysVol: 0.35,
+            lastAppliedVolume: 0.36,
+            startVol: 0.20,
+            targetVol: 0.90,
+            lastSetSucceeded: true
+        )
+        XCTAssertTrue(shouldIntervene, "渐增期间用户主动调低音量应准确触发外部干预")
+    }
+    
+    func testUserBoostingVolumeTriggersExternalIntervention() {
+        // 渐增过程中，用户按物理音量加键把系统音量从 0.30 猛拉到 0.55
+        let shouldIntervene = AudioEngine.shouldTreatAsExternalIntervention(
+            currentSysVol: 0.55,
+            lastObservedSysVol: 0.30,
+            lastAppliedVolume: 0.31,
+            startVol: 0.20,
+            targetVol: 0.90,
+            lastSetSucceeded: true
+        )
+        XCTAssertTrue(shouldIntervene, "用户大幅拉高音量应准确触发外部干预")
     }
 }

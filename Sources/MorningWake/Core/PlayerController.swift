@@ -20,6 +20,7 @@ public final class PlayerController: ObservableObject {
     private var fallbackAudioPlayer: AVAudioPlayer?
     private var customAudioPlayer: AVAudioPlayer?
     private let ytBundleId = "com.github.th-ch.youtube-music"
+    private let appleScriptQueue = DispatchQueue(label: "com.morningwake.applescript", qos: .userInitiated)
     public private(set) var currentSoftwareVolume: Float = 1.0
     
     private init() {}
@@ -129,16 +130,18 @@ public final class PlayerController: ObservableObject {
                 
                 DispatchQueue.main.asyncAfter(deadline: .now() + triggerDelay) { [weak self] in
                     guard let self = self, self.isPlaying else { return }
-                    // 核心阶梯 3：窗口就绪后下发第二道幂等 play 协议
-                    self.sendYouTubeMusicProtocolCommand("play", appURL: validURL)
-                    // 核心阶梯 4：补充全局硬件媒体播放键脉冲，双重保险穿透
-                    self.simulatePlayMediaKey()
+                    // 核心阶梯 3：仅在音频流尚未激活时下发第二道幂等 play 协议，避免媒体键 Toggle 误暂停
+                    if !AudioEngine.shared.isAudioOutputActive() {
+                        self.sendYouTubeMusicProtocolCommand("play", appURL: validURL)
+                    }
                 }
                 
-                // 核心阶梯 5：再延时 1.0 秒执行最后一次幂等播放加固
+                // 核心阶梯 4：再延时 1.0 秒检测音频流，未就绪则执行最后一次幂等播放加固
                 DispatchQueue.main.asyncAfter(deadline: .now() + (triggerDelay + 1.0)) { [weak self] in
                     guard let self = self, self.isPlaying else { return }
-                    self.sendYouTubeMusicProtocolCommand("play", appURL: validURL)
+                    if !AudioEngine.shared.isAudioOutputActive() {
+                        self.sendYouTubeMusicProtocolCommand("play", appURL: validURL)
+                    }
                 }
                 
                 // 核心阶梯 6：音频输出流主动自愈看门狗 (Watchdog)
@@ -202,12 +205,12 @@ public final class PlayerController: ObservableObject {
     
     private func launchAppleMusic(completion: @escaping (Bool) -> Void) {
         let script = "tell application \"Music\" to play"
-        var error: NSDictionary?
-        if let appleScript = NSAppleScript(source: script) {
-            appleScript.executeAndReturnError(&error)
-            completion(error == nil)
-        } else {
-            completion(false)
+        appleScriptQueue.async {
+            var error: NSDictionary?
+            let success = NSAppleScript(source: script)?.executeAndReturnError(&error) != nil && error == nil
+            DispatchQueue.main.async {
+                completion(success)
+            }
         }
     }
     
@@ -244,12 +247,14 @@ public final class PlayerController: ObservableObject {
         fallbackAudioPlayer?.volume = clamped
         customAudioPlayer?.volume = clamped
         
-        // 若当前是 Apple Music，通过 AppleScript 调节音量 (0~100)
+        // 若当前是 Apple Music，通过后台队列执行 AppleScript 调节音量 (0~100)，避免阻塞主线程
         if activePlayerName == "Apple Music" {
             let appleMusicVol = Int(clamped * 100)
             let script = "if application \"Music\" is running then tell application \"Music\" to set sound volume to \(appleMusicVol)"
-            var err: NSDictionary?
-            NSAppleScript(source: script)?.executeAndReturnError(&err)
+            appleScriptQueue.async {
+                var err: NSDictionary?
+                NSAppleScript(source: script)?.executeAndReturnError(&err)
+            }
         }
     }
     
@@ -329,18 +334,15 @@ public final class PlayerController: ObservableObject {
         
         switch target {
         case .youtubeMusic:
-            // 原生幂等纯暂停协议指令，后台直接注入，不抢占前台焦点且绝不发生 Toggle 误重播
+            // 原生幂等纯暂停协议指令，后台直接注入，不抢占前台焦点且绝不触发媒体键 Toggle 误重播
             sendYouTubeMusicProtocolCommand("pause")
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) { [weak self] in
-                if AudioEngine.shared.isAudioOutputActive() {
-                    self?.simulatePlayMediaKey()
-                }
-            }
             
         case .appleMusic:
             let script = "if application \"Music\" is running then tell application \"Music\" to pause"
-            var err: NSDictionary?
-            NSAppleScript(source: script)?.executeAndReturnError(&err)
+            appleScriptQueue.async {
+                var err: NSDictionary?
+                NSAppleScript(source: script)?.executeAndReturnError(&err)
+            }
             
         case .localFile, .fallbackOnly:
             break

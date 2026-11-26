@@ -68,7 +68,7 @@ public final class PowerManager {
     
     // MARK: - Wake Display & Prevent Sleep (点亮显示器与防休眠)
     
-    public func wakeDisplayAndPreventSleep() {
+    public func wakeDisplayAndPreventSleep(preferredDisplayName: String? = nil) {
         // 1. 若存在 BetterDisplay，下发 DDC 开机唤醒命令（解开软断电熄屏 / Standby 状态）
         let betterDisplayPath = "/Applications/BetterDisplay.app/Contents/MacOS/BetterDisplay"
         if FileManager.default.fileExists(atPath: betterDisplayPath) {
@@ -78,7 +78,13 @@ public final class PowerManager {
                 var env = ProcessInfo.processInfo.environment
                 env.removeValue(forKey: "ELECTRON_RUN_AS_NODE")
                 proc.environment = env
-                proc.arguments = ["set", "-namelike=Mi", "-ddc", "-vcp=powerMode", "-value=1"]
+                var args = ["set"]
+                if let displayName = preferredDisplayName?.trimmingCharacters(in: .whitespacesAndNewlines),
+                   !displayName.isEmpty {
+                    args.append("-namelike=\(displayName)")
+                }
+                args.append(contentsOf: ["-ddc", "-vcp=powerMode", "-value=1"])
+                proc.arguments = args
                 try? proc.run()
                 proc.waitUntilExit()
             }

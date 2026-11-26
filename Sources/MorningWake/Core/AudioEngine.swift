@@ -73,6 +73,9 @@ public final class AudioEngine: ObservableObject {
     private var targetVol: Float = 0.9
     private var currentCurve: FadeCurve = .smoothStep
     private var lastAppliedVolume: Float = 0.0
+    private var lastObservedSysVolume: Float = 0.0
+    private var lastSetVolumeSucceeded: Bool = true
+    private var fadeActivity: NSObjectProtocol?
     private var onProgressCallback: ((Float) -> Void)?
     private var onCompleteCallback: (() -> Void)?
     private var onInterventionCallback: (() -> Void)?
@@ -292,20 +295,21 @@ public final class AudioEngine: ObservableObject {
     public func setDDCVolume(_ volume: Float, force: Bool = false) {
         guard isBetterDisplayAvailable else { return }
         let clamped = max(0.0, min(1.0, volume))
-        let now = Date()
-        let timeDiff = now.timeIntervalSince(lastDDCExecutionTime)
-        let volDiff = abs(clamped - lastDDCSetVolume)
-        
-        // 节流机制：非强制更新时，若间隔小于 0.2 秒且音量变化小于 0.02，则跳过中间高频采样
-        if !force && timeDiff < 0.2 && volDiff < 0.02 {
-            return
-        }
-        
-        lastDDCExecutionTime = now
-        lastDDCSetVolume = clamped
         
         ddcQueue.async { [weak self] in
             guard let self = self else { return }
+            let now = Date()
+            let timeDiff = now.timeIntervalSince(self.lastDDCExecutionTime)
+            let volDiff = abs(clamped - self.lastDDCSetVolume)
+            
+            // 节流机制：非强制更新时，若间隔小于 0.2 秒且音量变化小于 0.02，则跳过中间高频采样
+            if !force && timeDiff < 0.2 && volDiff < 0.02 {
+                return
+            }
+            
+            self.lastDDCExecutionTime = now
+            self.lastDDCSetVolume = clamped
+            
             let proc = Process()
             proc.executableURL = URL(fileURLWithPath: self.betterDisplayPath)
             var env = ProcessInfo.processInfo.environment
@@ -344,10 +348,11 @@ public final class AudioEngine: ObservableObject {
         return status == noErr ? volume : lastVirtualVolume
     }
     
-    public func setVolume(_ volume: Float, on deviceID: AudioDeviceID? = nil) {
+    @discardableResult
+    public func setVolume(_ volume: Float, on deviceID: AudioDeviceID? = nil) -> Bool {
         let clamped = max(0.0, min(1.0, volume))
         self.lastVirtualVolume = clamped
-        guard let targetDeviceID = deviceID ?? getDefaultOutputDeviceID() else { return }
+        guard let targetDeviceID = deviceID ?? getDefaultOutputDeviceID() else { return false }
         
         var isSupported = true
         if let devInfo = availableDevices.first(where: { $0.id == targetDeviceID }) {
@@ -362,7 +367,7 @@ public final class AudioEngine: ObservableObject {
                 mScope: kAudioDevicePropertyScopeOutput,
                 mElement: kAudioObjectPropertyElementMain
             )
-            AudioObjectSetPropertyData(
+            let status = AudioObjectSetPropertyData(
                 targetDeviceID,
                 &address,
                 0,
@@ -370,10 +375,12 @@ public final class AudioEngine: ObservableObject {
                 propertySize,
                 &vol
             )
+            return status == noErr
         } else {
             // 设备不支持系统 CoreAudio 硬件音量控制（如 Mi Monitor / DisplayPort 外接音响通道）
             // 通过 BetterDisplay DDC/CI 硬件协议直接调节显示器硬件音频输出音量
             setDDCVolume(clamped)
+            return true
         }
     }
     
@@ -424,9 +431,16 @@ public final class AudioEngine: ObservableObject {
         self.fadeStartTime = Date()
         self.isFading = true
         
-        self.setVolume(self.startVol)
+        // 防止锁屏或后台状态下 macOS App Nap 对渐变定时器进行节流挂起
+        self.fadeActivity = ProcessInfo.processInfo.beginActivity(
+            options: [.userInitiatedAllowingIdleSystemSleep, .latencyCritical],
+            reason: "MorningWake smooth volume fade"
+        )
+        
+        self.lastSetVolumeSucceeded = self.setVolume(self.startVol)
         self.setDDCVolume(self.startVol, force: true)
         self.lastAppliedVolume = self.startVol
+        self.lastObservedSysVolume = self.getVolume()
         self.currentFadingVolume = self.startVol
         onProgress?(self.startVol)
         
@@ -438,6 +452,54 @@ public final class AudioEngine: ObservableObject {
         self.fadeTimer = timer
     }
     
+    /// 判断系统音量与预期音量的偏差是否属于外部主动干预（而非锁屏/系统限制导致音量停滞未动）
+    internal static func shouldTreatAsExternalIntervention(
+        currentSysVol: Float,
+        lastObservedSysVol: Float,
+        lastAppliedVolume: Float,
+        startVol: Float,
+        targetVol: Float,
+        lastSetSucceeded: Bool
+    ) -> Bool {
+        // 若上次系统音量写入直接返回失败，说明是系统通道受限，而非用户接管
+        guard lastSetSucceeded else { return false }
+        
+        let diffFromApplied = abs(currentSysVol - lastAppliedVolume)
+        guard diffFromApplied > 0.08 else { return false }
+        
+        let deltaFromObserved = currentSysVol - lastObservedSysVol
+        let isIncreasingFade = targetVol >= startVol
+        
+        // 若系统音量几乎停在原地没动（锁屏/驱动限制写入未生效），且方向未反向，不判定为外部干预
+        if abs(deltaFromObserved) < 0.01 {
+            let isStalledBehindTarget = isIncreasingFade
+                ? (currentSysVol <= lastAppliedVolume)
+                : (currentSysVol >= lastAppliedVolume)
+            if isStalledBehindTarget {
+                return false
+            }
+        }
+        
+        // 若系统音量只是顺着渐变方向滞后追赶（尚未超过预期音量），属于硬件步进/延迟追赶，不判定为干预
+        if isIncreasingFade && deltaFromObserved >= -0.02 && currentSysVol <= lastAppliedVolume + 0.06 {
+            return false
+        }
+        if !isIncreasingFade && deltaFromObserved <= 0.02 && currentSysVol >= lastAppliedVolume - 0.06 {
+            return false
+        }
+        
+        // 若当前是渐增，而系统音量反而明显下降（或渐减时反而明显上升），属于明确外部干预
+        if isIncreasingFade && deltaFromObserved < -0.04 {
+            return true
+        }
+        if !isIncreasingFade && deltaFromObserved > 0.04 {
+            return true
+        }
+        
+        // 其余情况（例如系统音量突然跳变超越预期目标方向）按偏差判定
+        return true
+    }
+    
     private func tickFade() {
         guard let startTime = fadeStartTime else { return }
         
@@ -447,15 +509,23 @@ public final class AudioEngine: ObservableObject {
            devInfo.supportsVolumeControl {
             let currentSysVol = getVolume()
             let diff = abs(currentSysVol - lastAppliedVolume)
+            let isExternalIntervention = Self.shouldTreatAsExternalIntervention(
+                currentSysVol: currentSysVol,
+                lastObservedSysVol: lastObservedSysVolume,
+                lastAppliedVolume: lastAppliedVolume,
+                startVol: startVol,
+                targetVol: targetVol,
+                lastSetSucceeded: lastSetVolumeSucceeded
+            )
             
-            // 容差过滤：单个音量阶梯约为 0.0625。若偏差 > 0.08 且连续 2 个周期或单次 > 0.15，则判定为物理键/用户接管
-            if diff > 0.15 {
+            // 容差过滤：单个音量阶梯约为 0.0625。若确认是外部调整且单次偏差 > 0.15 或连续 2 个周期 > 0.08，则判定为物理键/用户接管
+            if isExternalIntervention && diff > 0.15 {
                 print("[AudioEngine] 检测到显著外部音量调整 (\(currentSysVol) vs \(lastAppliedVolume))，退出渐变")
                 let intervention = onInterventionCallback
                 stopFade()
                 intervention?()
                 return
-            } else if diff > 0.08 {
+            } else if isExternalIntervention && diff > 0.08 {
                 consecutiveDiscrepancyCount += 1
                 if consecutiveDiscrepancyCount >= 2 {
                     print("[AudioEngine] 连续检测到外部音量干预 (\(currentSysVol) vs \(lastAppliedVolume))，退出渐变")
@@ -467,6 +537,7 @@ public final class AudioEngine: ObservableObject {
             } else {
                 consecutiveDiscrepancyCount = 0
             }
+            self.lastObservedSysVolume = currentSysVol
         }
         
         let elapsed = Date().timeIntervalSince(startTime)
@@ -475,7 +546,7 @@ public final class AudioEngine: ObservableObject {
         let curveFactor = Float(currentCurve.transform(t: normalizedProgress))
         let newVolume = startVol + (targetVol - startVol) * curveFactor
         
-        setVolume(newVolume)
+        self.lastSetVolumeSucceeded = setVolume(newVolume)
         self.lastAppliedVolume = newVolume
         self.currentFadingVolume = newVolume
         onProgressCallback?(newVolume)
@@ -491,6 +562,10 @@ public final class AudioEngine: ObservableObject {
         fadeTimer?.invalidate()
         fadeTimer = nil
         isFading = false
+        if let activity = fadeActivity {
+            ProcessInfo.processInfo.endActivity(activity)
+            fadeActivity = nil
+        }
     }
     
     /// 检测当前默认输出设备是否有音频流正在运行（即是否有应用正在播放声音）

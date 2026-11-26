@@ -37,6 +37,13 @@ public final class HolidayManager {
     
     private init() {
         loadPresetHolidayData()
+        loadCustomHolidayDataIfPresent()
+    }
+    
+    public func hasHolidayData(forYear year: Int) -> Bool {
+        let prefix = String(format: "%04d-", year)
+        return statutoryHolidays.keys.contains(where: { $0.hasPrefix(prefix) })
+            || adjustedWorkdays.keys.contains(where: { $0.hasPrefix(prefix) })
     }
     
     // MARK: - Core Query Interface
@@ -160,6 +167,25 @@ public final class HolidayManager {
         adjustedWorkdays["2026-10-10"] = "国庆调休上班"
         for day in 1...7 {
             statutoryHolidays[String(format: "2026-10-%02d", day)] = (day == 1 ? "国庆节" : "国庆假期")
+        }
+    }
+    
+    /// 支持从 ~/Library/Application Support/MorningWake/holidays.json 加载外部扩展节假日数据，便于跨年维护
+    private func loadCustomHolidayDataIfPresent() {
+        guard let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first else {
+            return
+        }
+        let customURL = appSupport.appendingPathComponent("MorningWake/holidays.json")
+        guard FileManager.default.fileExists(atPath: customURL.path),
+              let data = try? Data(contentsOf: customURL),
+              let decoded = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            return
+        }
+        if let holidays = decoded["statutoryHolidays"] as? [String: String] {
+            for (k, v) in holidays { statutoryHolidays[k] = v }
+        }
+        if let workdays = decoded["adjustedWorkdays"] as? [String: String] {
+            for (k, v) in workdays { adjustedWorkdays[k] = v }
         }
     }
 }

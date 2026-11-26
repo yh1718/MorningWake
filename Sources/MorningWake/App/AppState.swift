@@ -176,46 +176,28 @@ public final class AppState: ObservableObject {
     @Published public var nextAlarmTargetHour: Int = 7
     @Published public var nextAlarmTargetMinute: Int = 30
     
-    /// 前端界面统一呈现的时间（即使闹钟关闭或未到点，也显示对应设定的主时间，防止出现 "--:--"）
-    public var displayTargetHour: Int {
+    private var displayTargetTime: (hour: Int, minute: Int) {
         if isAlarmEnabled && nextAlarmDate != nil {
-            return nextAlarmTargetHour
+            return (nextAlarmTargetHour, nextAlarmTargetMinute)
         }
         if repeatSchedule == .smartWorkday {
-            let today = Date()
             let isEffectiveWorkday = HolidayManager.shared.shouldTreatAsWorkday(
-                date: today,
+                date: Date(),
                 smartHoliday: smartHolidayEnabled,
                 smartWorkday: smartWorkdayEnabled
             )
             if !isEffectiveWorkday && weekendEnabled {
-                return weekendHour
+                return (weekendHour, weekendMinute)
             }
-            return workdayHour
-        } else {
-            return alarmHour
+            return (workdayHour, workdayMinute)
         }
+        return (alarmHour, alarmMinute)
     }
     
-    public var displayTargetMinute: Int {
-        if isAlarmEnabled && nextAlarmDate != nil {
-            return nextAlarmTargetMinute
-        }
-        if repeatSchedule == .smartWorkday {
-            let today = Date()
-            let isEffectiveWorkday = HolidayManager.shared.shouldTreatAsWorkday(
-                date: today,
-                smartHoliday: smartHolidayEnabled,
-                smartWorkday: smartWorkdayEnabled
-            )
-            if !isEffectiveWorkday && weekendEnabled {
-                return weekendMinute
-            }
-            return workdayMinute
-        } else {
-            return alarmMinute
-        }
-    }
+    /// 前端界面统一呈现的时间（即使闹钟关闭或未到点，也显示对应设定的主时间，防止出现 "--:--"）
+    public var displayTargetHour: Int { displayTargetTime.hour }
+    
+    public var displayTargetMinute: Int { displayTargetTime.minute }
     
     @Published public var todayScheduleInfo: String = ""
     @Published public var countdownString: String = "计算中..."
@@ -524,9 +506,11 @@ public final class AppState: ObservableObject {
     private func updateCountdown() {
         let now = Date()
         
-        // 1. 今日节假日属性始终实时保持最新（无论主开关是否开启）
+        // 1. 今日节假日属性仅在变更时更新，避免每秒触发无效 UI 重绘
         let todayAttr = HolidayManager.shared.getDayAttribute(for: now)
-        self.todayScheduleInfo = todayAttr.badgeText
+        if self.todayScheduleInfo != todayAttr.badgeText {
+            self.todayScheduleInfo = todayAttr.badgeText
+        }
         
         // 2. 跨午夜自动重排期检测（如 00:00 后自动切换新的一天、恢复跳过状态等）
         let currentDayOfYear = Calendar.current.ordinality(of: .day, in: .year, for: now) ?? 0
@@ -613,7 +597,7 @@ public final class AppState: ObservableObject {
         }
     }
     
-    public func restoreAudioOutputDeviceIfNeeded() {
+    public func restoreAudioOutputDeviceIfNeeded(restoreVolumeTo: Float = 0.20) {
         guard restorePreviousDevice, let originalID = previousAudioDeviceID else { return }
         let currentID = AudioEngine.shared.getDefaultOutputDeviceID()
         if currentID != originalID {
@@ -621,17 +605,28 @@ public final class AppState: ObservableObject {
             if AudioEngine.shared.availableDevices.contains(where: { $0.id == originalID }) {
                 print("[AppState] 恢复先前音频输出设备 (ID: \(originalID))")
                 AudioEngine.shared.setDefaultOutputDevice(id: originalID)
-                AudioEngine.shared.setVolume(0.20, on: originalID)
+                AudioEngine.shared.setVolume(restoreVolumeTo, on: originalID)
             } else {
                 print("[AppState] 先前音频设备 (ID: \(originalID)) 当前已离线，跳过恢复")
             }
         } else {
-            AudioEngine.shared.setVolume(0.20, on: originalID)
+            AudioEngine.shared.setVolume(restoreVolumeTo, on: originalID)
         }
         self.previousAudioDeviceID = nil
     }
     
     // MARK: - Alarm Execution
+    
+    private var preferredDisplayNameForWake: String? {
+        guard !targetAudioDevice.isEmpty else { return nil }
+        if let dev = AudioEngine.shared.availableDevices.first(where: {
+            $0.name == targetAudioDevice || $0.uid == targetAudioDevice
+        }) {
+            // 仅当目标音频通道属于外接显示器音频（非内置且不支持系统音量）时，才按显示器名称精准唤醒
+            return (!dev.isBuiltIn && !dev.supportsVolumeControl) ? dev.name : nil
+        }
+        return nil
+    }
     
     public func triggerMorningAlarm() {
         if isManualPlaying {
@@ -646,7 +641,9 @@ public final class AppState: ObservableObject {
         skippedDayTimestamp = 0.0
         
         // 点亮外接显示器并保持防休眠
-        PowerManager.shared.wakeDisplayAndPreventSleep()
+        PowerManager.shared.wakeDisplayAndPreventSleep(
+            preferredDisplayName: preferredDisplayNameForWake
+        )
         
         // 应用音频路由（支持 Mi Monitor、外接音响与内置扬声器，若断电则降级）
         applyAudioOutputRouting()
@@ -836,15 +833,16 @@ public final class AppState: ObservableObject {
         isManualPlaying = true
         isManualVolumeOverridden = false
         
-        // 允许外接/内建显示器按系统设定正常息屏，但保持音频/系统活跃不休眠
+        // 允许外接/内建显示器按系统设定正常息屏，同时维持系统防空闲休眠避免音乐中断
         PowerManager.shared.allowDisplaySleepOnly()
+        PowerManager.shared.enableStandbyKeepAlive()
         
         // 应用音频路由
         applyAudioOutputRouting()
         
         let currentVol = AudioEngine.shared.getVolume()
         let targetVol = Float(targetVolume)
-        PlayerController.shared.setSoftwareVolume(targetVol)
+        PlayerController.shared.setSoftwareVolume(currentVol)
         AudioEngine.shared.startFade(
             from: currentVol,
             to: targetVol,
@@ -880,6 +878,9 @@ public final class AppState: ObservableObject {
         AudioEngine.shared.stopFade()
         PlayerController.shared.stopPlayback(for: playerTarget)
         PowerManager.shared.allowSleep()
+        if !isAlarmEnabled || nextAlarmDate == nil {
+            PowerManager.shared.disableStandbyKeepAlive()
+        }
         
         // 停止播放时将声音降至 20%
         AudioEngine.shared.setVolume(0.20)
@@ -901,7 +902,9 @@ public final class AppState: ObservableObject {
         originalVolumeBeforeTest = AudioEngine.shared.getVolume()
         
         // 点亮外接显示器并保持防休眠
-        PowerManager.shared.wakeDisplayAndPreventSleep()
+        PowerManager.shared.wakeDisplayAndPreventSleep(
+            preferredDisplayName: preferredDisplayNameForWake
+        )
         
         // 应用音频路由
         applyAudioOutputRouting()
@@ -930,7 +933,7 @@ public final class AppState: ObservableObject {
                 }
             },
             onComplete: { [weak self] in
-                print("[AppState] 试跑淡入完成，2秒后自动复位至20%...")
+                print("[AppState] 试跑淡入完成，2秒后自动复位...")
                 DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) {
                     self?.stopTestRun()
                 }
@@ -944,19 +947,15 @@ public final class AppState: ObservableObject {
         isManualVolumeOverridden = false
         AudioEngine.shared.stopFade()
         PlayerController.shared.stopPlayback(for: playerTarget)
+        PowerManager.shared.allowSleep()
         
-        // 试跑完成或点击停止测试时，同样降至 20%，方便用户立即验证关闭降音效果
-        AudioEngine.shared.setVolume(0.20)
-        PlayerController.shared.setSoftwareVolume(0.20)
-        currentVolumePercent = 20
+        // 试跑完成或停止时，恢复试跑前的原始音量
+        let restoreVol = max(0.0, min(1.0, originalVolumeBeforeTest))
+        AudioEngine.shared.setVolume(restoreVol)
+        PlayerController.shared.setSoftwareVolume(restoreVol)
+        currentVolumePercent = Int(restoreVol * 100)
         
-        restoreAudioOutputDeviceIfNeeded()
-        
-        if restorePreviousDevice, let originalID = previousAudioDeviceID {
-            AudioEngine.shared.setDefaultOutputDevice(id: originalID)
-            self.previousAudioDeviceID = nil
-            AudioEngine.shared.setVolume(0.20, on: originalID)
-        }
+        restoreAudioOutputDeviceIfNeeded(restoreVolumeTo: restoreVol)
     }
     
     // MARK: - Interactive Notification
