@@ -645,8 +645,28 @@ public final class AppState: ObservableObject {
             preferredDisplayName: preferredDisplayNameForWake
         )
         
+        // 闹钟触发时先刷新设备列表，确保从休眠唤醒后设备拓扑是最新的
+        AudioEngine.shared.refreshAudioDevices()
+        
         // 应用音频路由（支持 Mi Monitor、外接音响与内置扬声器，若断电则降级）
-        applyAudioOutputRouting()
+        let routeOk = applyAudioOutputRouting()
+        if !routeOk {
+            // 设备降级失败（如 Mac mini 灭屏后外接设备全掉线），延迟 2 秒后重试一次
+            DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) { [weak self] in
+                guard let self = self, self.isAlarmRinging else { return }
+                print("[AppState] 音频路由首次降级失败，延迟 2 秒后重试...")
+                AudioEngine.shared.refreshAudioDevices()
+                let retryOk = self.applyAudioOutputRouting()
+                if retryOk {
+                    // 路由恢复成功，尝试将硬件音量同步到当前渐变进度
+                    let currentFadeVol = AudioEngine.shared.currentFadingVolume
+                    AudioEngine.shared.setVolume(currentFadeVol)
+                    print("[AppState] 音频路由重试成功，硬件音量已同步至 \(currentFadeVol)")
+                } else {
+                    print("[AppState] ⚠️ 音频路由重试仍失败，当前依赖软件音量播放")
+                }
+            }
+        }
         
         // 设置初始软件音量，避免不可调硬件直接大音量爆响
         PlayerController.shared.setSoftwareVolume(Float(startVolume))
@@ -665,7 +685,10 @@ public final class AppState: ObservableObject {
             curve: fadeCurve,
             onProgress: { [weak self] vol in
                 DispatchQueue.main.async {
-                    self?.currentVolumePercent = Int(vol * 100)
+                    // 显示实际硬件音量（而非纯曲线计算值），给用户真实反馈
+                    let actualVol = AudioEngine.shared.getVolume()
+                    let displayVol = max(vol, actualVol)  // 取较大值，防止硬件延迟导致界面回跳
+                    self?.currentVolumePercent = Int(displayVol * 100)
                     PlayerController.shared.setSoftwareVolume(vol)
                 }
             },
@@ -850,7 +873,10 @@ public final class AppState: ObservableObject {
             curve: fadeCurve,
             onProgress: { [weak self] vol in
                 DispatchQueue.main.async {
-                    self?.currentVolumePercent = Int(vol * 100)
+                    // 显示实际硬件音量（而非纯曲线计算值），给用户真实反馈
+                    let actualVol = AudioEngine.shared.getVolume()
+                    let displayVol = max(vol, actualVol)  // 取较大值，防止硬件延迟导致界面回跳
+                    self?.currentVolumePercent = Int(displayVol * 100)
                     PlayerController.shared.setSoftwareVolume(vol)
                 }
             },
@@ -923,7 +949,10 @@ public final class AppState: ObservableObject {
             curve: fadeCurve,
             onProgress: { [weak self] vol in
                 DispatchQueue.main.async {
-                    self?.currentVolumePercent = Int(vol * 100)
+                    // 显示实际硬件音量（而非纯曲线计算值），给用户真实反馈
+                    let actualVol = AudioEngine.shared.getVolume()
+                    let displayVol = max(vol, actualVol)  // 取较大值，防止硬件延迟导致界面回跳
+                    self?.currentVolumePercent = Int(displayVol * 100)
                     PlayerController.shared.setSoftwareVolume(vol)
                 }
             },

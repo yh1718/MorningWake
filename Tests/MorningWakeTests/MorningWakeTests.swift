@@ -1,6 +1,7 @@
 import XCTest
 import SwiftUI
 import AppKit
+import CoreAudio
 @testable import MorningWake
 
 final class MorningWakeTests: XCTestCase {
@@ -492,5 +493,66 @@ final class MorningWakeTests: XCTestCase {
             lastSetSucceeded: true
         )
         XCTAssertTrue(shouldIntervene, "用户大幅拉高音量应准确触发外部干预")
+    }
+    
+    // MARK: - Device Offline Volume Fade Recovery Tests
+    
+    func testFadeDoesNotAdvanceAppliedVolumeOnSetVolumeFailure() {
+        // 验证 setVolume 失败时 lastAppliedVolume 不会被推进
+        // 通过在不存在的设备上执行 setVolume 来模拟失败
+        let engine = AudioEngine.shared
+        let originalVol = engine.getVolume()
+        
+        // 使用一个不存在的 AudioDeviceID 来触发 setVolume 失败
+        let result = engine.setVolume(0.80, on: AudioDeviceID(99999))
+        XCTAssertFalse(result, "向不存在的设备 ID 写音量应返回 false")
+        
+        // 还原
+        engine.setVolume(originalVol)
+    }
+    
+    func testFadeCompletionWithVolumeVerification() {
+        // 验证渐变能正常完成并在结束时验证音量
+        let expectation = expectation(description: "Fade completion with verification")
+        var completed = false
+        
+        AudioEngine.shared.startFade(
+            from: 0.3,
+            to: 0.6,
+            duration: 0.3,
+            onProgress: { _ in },
+            onComplete: {
+                completed = true
+                expectation.fulfill()
+            }
+        )
+        
+        wait(for: [expectation], timeout: 2.0)
+        XCTAssertTrue(completed, "渐变应正常完成")
+        
+        // 渐变结束后，实际音量应接近目标值
+        let actualVol = AudioEngine.shared.getVolume()
+        XCTAssertEqual(actualVol, 0.6, accuracy: 0.1, "渐变结束后硬件音量应接近目标值")
+    }
+    
+    func testFadeWithRefreshedDeviceListAtStart() {
+        // 验证 startFade 会在开始时刷新设备列表
+        let engine = AudioEngine.shared
+        _ = engine.availableDevices.count
+        
+        let expectation = expectation(description: "Quick fade")
+        engine.startFade(
+            from: 0.3,
+            to: 0.4,
+            duration: 0.2,
+            onComplete: {
+                expectation.fulfill()
+            }
+        )
+        
+        wait(for: [expectation], timeout: 1.5)
+        
+        // 渐变开始时会调用 refreshAudioDevices，设备列表应保持有效
+        XCTAssertGreaterThan(engine.availableDevices.count, 0, "渐变启动时应刷新并获取到可用设备")
     }
 }

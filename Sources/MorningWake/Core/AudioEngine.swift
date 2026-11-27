@@ -80,6 +80,8 @@ public final class AudioEngine: ObservableObject {
     private var onCompleteCallback: (() -> Void)?
     private var onInterventionCallback: (() -> Void)?
     private var consecutiveDiscrepancyCount: Int = 0
+    private var consecutiveSetVolumeFailures: Int = 0
+    private var fadeTickCount: Int = 0
     
     private init() {
         refreshAudioDevices()
@@ -416,6 +418,8 @@ public final class AudioEngine: ObservableObject {
     ) {
         stopFade()
         
+        // 渐变前强制刷新设备列表，确保拿到最新拓扑（防止依赖数小时前的缓存）
+        refreshAudioDevices()
         // 渐变前确保设备支持音量调节
         ensureSettableOutputDevice()
         self.unmute()
@@ -428,6 +432,8 @@ public final class AudioEngine: ObservableObject {
         self.onInterventionCallback = onIntervention
         self.onCompleteCallback = onComplete
         self.consecutiveDiscrepancyCount = 0
+        self.consecutiveSetVolumeFailures = 0
+        self.fadeTickCount = 0
         self.fadeStartTime = Date()
         self.isFading = true
         
@@ -502,6 +508,7 @@ public final class AudioEngine: ObservableObject {
     
     private func tickFade() {
         guard let startTime = fadeStartTime else { return }
+        fadeTickCount += 1
         
         // 仅在当前设备支持硬件主音量控制时，才进行外部物理音量按键干预检测
         if let currentDevID = getDefaultOutputDeviceID(),
@@ -546,13 +553,55 @@ public final class AudioEngine: ObservableObject {
         let curveFactor = Float(currentCurve.transform(t: normalizedProgress))
         let newVolume = startVol + (targetVol - startVol) * curveFactor
         
-        self.lastSetVolumeSucceeded = setVolume(newVolume)
-        self.lastAppliedVolume = newVolume
-        self.currentFadingVolume = newVolume
-        onProgressCallback?(newVolume)
+        let setOk = setVolume(newVolume)
+        self.lastSetVolumeSucceeded = setOk
+        
+        if setOk {
+            // 硬件音量写入成功：正常推进
+            self.lastAppliedVolume = newVolume
+            self.currentFadingVolume = newVolume
+            self.consecutiveSetVolumeFailures = 0
+            onProgressCallback?(newVolume)
+        } else {
+            // 硬件音量写入失败：不推进 lastAppliedVolume，保持上一次成功的值
+            // 仅推进软件音量，确保播放器至少能发出声音
+            self.currentFadingVolume = newVolume
+            self.consecutiveSetVolumeFailures += 1
+            onProgressCallback?(newVolume)
+            
+            // 每隔 2 秒 (20 个 tick) 尝试刷新设备列表，检测设备是否恢复
+            if consecutiveSetVolumeFailures % 20 == 0 {
+                print("[AudioEngine] ⚠️ setVolume 连续失败 \(consecutiveSetVolumeFailures) 次，刷新设备列表尝试恢复...")
+                refreshAudioDevices()
+            }
+        }
+        
+        // 诊断日志：每 10 秒 (100 个 tick) 打印渐变状态快照
+        if fadeTickCount % 100 == 0 {
+            let sysVol = getVolume()
+            print("[AudioEngine] fade tick: elapsed=\(String(format: "%.1f", elapsed))s, target=\(targetVol), applied=\(lastAppliedVolume), sysVol=\(sysVol), setOk=\(setOk), devCount=\(availableDevices.count), failures=\(consecutiveSetVolumeFailures)")
+        }
         
         if normalizedProgress >= 1.0 {
             setDDCVolume(targetVol, force: true)
+            
+            // 渐变结束前验证硬件音量是否真正到位
+            let actualVol = getVolume()
+            let volDiff = abs(actualVol - targetVol)
+            if volDiff > 0.05 {
+                print("[AudioEngine] ⚠️ 渐变结束但硬件音量偏差过大 (actual=\(actualVol), target=\(targetVol))，补偿重试...")
+                let retryOk = setVolume(targetVol)
+                if !retryOk {
+                    // 补偿也失败，延迟 1 秒后再试一次（给设备热插拔恢复留时间）
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { [weak self] in
+                        guard let self = self else { return }
+                        self.refreshAudioDevices()
+                        let finalOk = self.setVolume(self.targetVol)
+                        print("[AudioEngine] 延迟补偿重试 setVolume(\(self.targetVol)): \(finalOk ? "成功" : "仍失败")")
+                    }
+                }
+            }
+            
             stopFade()
             onCompleteCallback?()
         }
