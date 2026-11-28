@@ -82,6 +82,7 @@ public final class AudioEngine: ObservableObject {
     private var consecutiveDiscrepancyCount: Int = 0
     private var consecutiveSetVolumeFailures: Int = 0
     private var fadeTickCount: Int = 0
+    private var fadeDeviceID: AudioDeviceID?
     
     private init() {
         refreshAudioDevices()
@@ -434,6 +435,7 @@ public final class AudioEngine: ObservableObject {
         self.consecutiveDiscrepancyCount = 0
         self.consecutiveSetVolumeFailures = 0
         self.fadeTickCount = 0
+        self.fadeDeviceID = self.getDefaultOutputDeviceID()
         self.fadeStartTime = Date()
         self.isFading = true
         
@@ -446,7 +448,8 @@ public final class AudioEngine: ObservableObject {
         self.lastSetVolumeSucceeded = self.setVolume(self.startVol)
         self.setDDCVolume(self.startVol, force: true)
         self.lastAppliedVolume = self.startVol
-        self.lastObservedSysVolume = self.getVolume()
+        // 以期望起始音量作为初始观测基准，避免降级切换后 getVolume() 瞬态读到旧设备或未生效的旧硬件音量
+        self.lastObservedSysVolume = self.startVol
         self.currentFadingVolume = self.startVol
         onProgress?(self.startVol)
         
@@ -509,11 +512,22 @@ public final class AudioEngine: ObservableObject {
     private func tickFade() {
         guard let startTime = fadeStartTime else { return }
         fadeTickCount += 1
+        let elapsed = Date().timeIntervalSince(startTime)
         
-        // 仅在当前设备支持硬件主音量控制时，才进行外部物理音量按键干预检测
-        if let currentDevID = getDefaultOutputDeviceID(),
-           let devInfo = availableDevices.first(where: { $0.id == currentDevID }),
-           devInfo.supportsVolumeControl {
+        let currentDevID = getDefaultOutputDeviceID()
+        if let activeID = currentDevID, let recordedID = fadeDeviceID, activeID != recordedID {
+            // 渐变期间系统默认输出设备发生切换（如降级或显示器重新接通），重置观测基准，防止设备音量差异触发误判
+            print("[AudioEngine] 检测到渐变期间输出设备切换 (\(recordedID) -> \(activeID))，重置干预检测基准")
+            self.fadeDeviceID = activeID
+            self.consecutiveDiscrepancyCount = 0
+            self.lastObservedSysVolume = getVolume()
+        } else if elapsed < 3.0 {
+            // 渐变前 3 秒宽限期：等待 CoreAudio 写入传播与设备切换稳定，跳过干预检测仅同步观测值
+            self.lastObservedSysVolume = getVolume()
+        } else if let currentDevID = currentDevID,
+                  let devInfo = availableDevices.first(where: { $0.id == currentDevID }),
+                  devInfo.supportsVolumeControl {
+            // 仅在当前设备支持硬件主音量控制且已过初始宽限期时，才进行外部物理音量按键干预检测
             let currentSysVol = getVolume()
             let diff = abs(currentSysVol - lastAppliedVolume)
             let isExternalIntervention = Self.shouldTreatAsExternalIntervention(
@@ -547,7 +561,6 @@ public final class AudioEngine: ObservableObject {
             self.lastObservedSysVolume = currentSysVol
         }
         
-        let elapsed = Date().timeIntervalSince(startTime)
         let normalizedProgress = min(1.0, elapsed / fadeDuration)
         
         let curveFactor = Float(currentCurve.transform(t: normalizedProgress))

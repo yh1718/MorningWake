@@ -651,7 +651,10 @@ public final class AppState: ObservableObject {
         // 应用音频路由（支持 Mi Monitor、外接音响与内置扬声器，若断电则降级）
         let routeOk = applyAudioOutputRouting()
         if !routeOk {
-            // 设备降级失败（如 Mac mini 灭屏后外接设备全掉线），延迟 2 秒后重试一次
+            // 发生降级（如 Mi Monitor 离线切至内置扬声器），先将新设备硬件音量同步到起始值，防止保留旧高位音量
+            AudioEngine.shared.setVolume(Float(startVolume))
+            
+            // 延迟 2 秒后重试一次路由，以便外接显示器唤醒就绪后能恢复
             DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) { [weak self] in
                 guard let self = self, self.isAlarmRinging else { return }
                 print("[AppState] 音频路由首次降级失败，延迟 2 秒后重试...")

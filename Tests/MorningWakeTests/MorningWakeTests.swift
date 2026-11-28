@@ -555,4 +555,40 @@ final class MorningWakeTests: XCTestCase {
         // 渐变开始时会调用 refreshAudioDevices，设备列表应保持有效
         XCTAssertGreaterThan(engine.availableDevices.count, 0, "渐变启动时应刷新并获取到可用设备")
     }
+    
+    func testFadeGracePeriodPreventsFalseInterventionOnDeviceFallback() {
+        // 模拟降级切换到内置扬声器时，初始硬件音量与 startVol 差异较大（如 0.56 vs 0.25）
+        // 在 3 秒宽限期内不应误触发外部物理调音干预
+        let engine = AudioEngine.shared
+        let originalDevID = engine.getDefaultOutputDeviceID()
+        let originalVol = engine.getVolume()
+        
+        if engine.switchToBuiltInSpeaker() {
+            engine.setVolume(0.56)
+            
+            let expectation = expectation(description: "Fade completes without false intervention")
+            var interventionTriggered = false
+            
+            engine.startFade(
+                from: 0.25,
+                to: 0.45,
+                duration: 0.5,
+                onIntervention: {
+                    interventionTriggered = true
+                },
+                onComplete: {
+                    expectation.fulfill()
+                }
+            )
+            
+            wait(for: [expectation], timeout: 2.0)
+            XCTAssertFalse(interventionTriggered, "渐变启动初期存在硬件音量差异时，不应误触发外部物理调音干预")
+            
+            engine.setVolume(originalVol)
+        }
+        
+        if let origID = originalDevID {
+            engine.setDefaultOutputDevice(id: origID)
+        }
+    }
 }
